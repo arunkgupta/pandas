@@ -2,11 +2,7 @@
 """
 
 import ast
-import operator
-import sys
-import inspect
 import tokenize
-import datetime
 
 from functools import partial
 
@@ -15,13 +11,14 @@ from pandas import compat
 from pandas.compat import StringIO, lmap, zip, reduce, string_types
 from pandas.core.base import StringMixin
 from pandas.core import common as com
+import pandas.formats.printing as printing
 from pandas.tools.util import compose
 from pandas.computation.ops import (_cmp_ops_syms, _bool_ops_syms,
                                     _arith_ops_syms, _unary_ops_syms, is_term)
 from pandas.computation.ops import _reductions, _mathops, _LOCAL_TAG
 from pandas.computation.ops import Op, BinOp, UnaryOp, Term, Constant, Div
-from pandas.computation.ops import UndefinedVariableError
-from pandas.computation.scope import Scope, _ensure_scope
+from pandas.computation.ops import UndefinedVariableError, FuncNode
+from pandas.computation.scope import Scope
 
 
 def tokenize_string(source):
@@ -381,9 +378,9 @@ class BaseExprVisitor(ast.NodeVisitor):
                                                       rhs.type))
 
         if self.engine != 'pytables':
-            if (res.op in _cmp_ops_syms
-                    and getattr(lhs, 'is_datetime', False)
-                    or getattr(rhs, 'is_datetime', False)):
+            if (res.op in _cmp_ops_syms and
+                    getattr(lhs, 'is_datetime', False) or
+                    getattr(rhs, 'is_datetime', False)):
                 # all date ops must be done in python bc numexpr doesn't work
                 # well with NaT
                 return self._possibly_eval(res, self.binary_ops)
@@ -392,8 +389,8 @@ class BaseExprVisitor(ast.NodeVisitor):
             # "in"/"not in" ops are always evaluated in python
             return self._possibly_eval(res, eval_in_python)
         elif self.engine != 'pytables':
-            if (getattr(lhs, 'return_type', None) == object
-                    or getattr(rhs, 'return_type', None) == object):
+            if (getattr(lhs, 'return_type', None) == object or
+                    getattr(rhs, 'return_type', None) == object):
                 # evaluate "==" and "!=" in python if either of our operands
                 # has an object return type
                 return self._possibly_eval(res, eval_in_python +
@@ -427,7 +424,7 @@ class BaseExprVisitor(ast.NodeVisitor):
         return self.term_type(name, self.env)
 
     def visit_List(self, node, **kwargs):
-        name = self.env.add_tmp([self.visit(e).value for e in node.elts])
+        name = self.env.add_tmp([self.visit(e)(self.env) for e in node.elts])
         return self.term_type(name, self.env)
 
     visit_Tuple = visit_List
@@ -516,7 +513,57 @@ class BaseExprVisitor(ast.NodeVisitor):
 
         raise ValueError("Invalid Attribute context {0}".format(ctx.__name__))
 
-    def visit_Call(self, node, side=None, **kwargs):
+    def visit_Call_35(self, node, side=None, **kwargs):
+        """ in 3.5 the starargs attribute was changed to be more flexible,
+        #11097 """
+
+        if isinstance(node.func, ast.Attribute):
+            res = self.visit_Attribute(node.func)
+        elif not isinstance(node.func, ast.Name):
+            raise TypeError("Only named functions are supported")
+        else:
+            try:
+                res = self.visit(node.func)
+            except UndefinedVariableError:
+                # Check if this is a supported function name
+                try:
+                    res = FuncNode(node.func.id)
+                except ValueError:
+                    # Raise original error
+                    raise
+
+        if res is None:
+            raise ValueError("Invalid function call {0}".format(node.func.id))
+        if hasattr(res, 'value'):
+            res = res.value
+
+        if isinstance(res, FuncNode):
+
+            new_args = [self.visit(arg) for arg in node.args]
+
+            if node.keywords:
+                raise TypeError("Function \"{0}\" does not support keyword "
+                                "arguments".format(res.name))
+
+            return res(*new_args, **kwargs)
+
+        else:
+
+            new_args = [self.visit(arg).value for arg in node.args]
+
+            for key in node.keywords:
+                if not isinstance(key, ast.keyword):
+                    raise ValueError("keyword error in function call "
+                                     "'{0}'".format(node.func.id))
+
+                if key.arg:
+                    # TODO: bug?
+                    kwargs.append(ast.keyword(
+                        keyword.arg, self.visit(keyword.value)))  # noqa
+
+            return self.const_type(res(*new_args, **kwargs), self.env)
+
+    def visit_Call_legacy(self, node, side=None, **kwargs):
 
         # this can happen with: datetime.datetime
         if isinstance(node.func, ast.Attribute):
@@ -524,27 +571,48 @@ class BaseExprVisitor(ast.NodeVisitor):
         elif not isinstance(node.func, ast.Name):
             raise TypeError("Only named functions are supported")
         else:
-            res = self.visit(node.func)
+            try:
+                res = self.visit(node.func)
+            except UndefinedVariableError:
+                # Check if this is a supported function name
+                try:
+                    res = FuncNode(node.func.id)
+                except ValueError:
+                    # Raise original error
+                    raise
 
         if res is None:
             raise ValueError("Invalid function call {0}".format(node.func.id))
         if hasattr(res, 'value'):
             res = res.value
 
-        args = [self.visit(targ).value for targ in node.args]
-        if node.starargs is not None:
-            args += self.visit(node.starargs).value
+        if isinstance(res, FuncNode):
+            args = [self.visit(targ) for targ in node.args]
 
-        keywords = {}
-        for key in node.keywords:
-            if not isinstance(key, ast.keyword):
-                raise ValueError("keyword error in function call "
-                                 "'{0}'".format(node.func.id))
-            keywords[key.arg] = self.visit(key.value).value
-        if node.kwargs is not None:
-            keywords.update(self.visit(node.kwargs).value)
+            if node.starargs is not None:
+                args += self.visit(node.starargs)
 
-        return self.const_type(res(*args, **keywords), self.env)
+            if node.keywords or node.kwargs:
+                raise TypeError("Function \"{0}\" does not support keyword "
+                                "arguments".format(res.name))
+
+            return res(*args, **kwargs)
+
+        else:
+            args = [self.visit(targ).value for targ in node.args]
+            if node.starargs is not None:
+                args += self.visit(node.starargs).value
+
+            keywords = {}
+            for key in node.keywords:
+                if not isinstance(key, ast.keyword):
+                    raise ValueError("keyword error in function call "
+                                     "'{0}'".format(node.func.id))
+                keywords[key.arg] = self.visit(key.value).value
+            if node.kwargs is not None:
+                keywords.update(self.visit(node.kwargs).value)
+
+            return self.const_type(res(*args, **keywords), self.env)
 
     def translate_In(self, op):
         return op
@@ -586,8 +654,15 @@ class BaseExprVisitor(ast.NodeVisitor):
         operands = node.values
         return reduce(visitor, operands)
 
+# ast.Call signature changed on 3.5,
+# conditionally change which methods is named
+# visit_Call depending on Python version, #11097
+if compat.PY35:
+    BaseExprVisitor.visit_Call = BaseExprVisitor.visit_Call_35
+else:
+    BaseExprVisitor.visit_Call = BaseExprVisitor.visit_Call_legacy
 
-_python_not_supported = frozenset(['Dict', 'Call', 'BoolOp', 'In', 'NotIn'])
+_python_not_supported = frozenset(['Dict', 'BoolOp', 'In', 'NotIn'])
 _numexpr_supported_calls = frozenset(_reductions + _mathops)
 
 
@@ -642,7 +717,7 @@ class Expr(StringMixin):
         return self.terms(self.env)
 
     def __unicode__(self):
-        return com.pprint_thing(self.terms)
+        return printing.pprint_thing(self.terms)
 
     def __len__(self):
         return len(self.expr)

@@ -9,19 +9,22 @@ import numpy as np
 from pandas.core.series import Series
 from pandas.core.frame import DataFrame
 
+from pandas.core.sparse import SparseDataFrame, SparseSeries
+from pandas.sparse.array import SparseArray
+from pandas._sparse import IntIndex
+
 from pandas.core.categorical import Categorical
-from pandas.core.common import (notnull, _ensure_platform_int, _maybe_promote,
-                                isnull)
-from pandas.core.groupby import (get_group_index, _compress_group_index,
-                                 decons_group_index)
+from pandas.core.common import notnull, _ensure_platform_int, _maybe_promote
+from pandas.core.groupby import get_group_index, _compress_group_index
+
 import pandas.core.common as com
-import pandas.algos as algos
+import pandas.core.algorithms as algos
+import pandas.algos as _algos
 
 from pandas.core.index import MultiIndex, _get_na_value
 
 
 class _Unstacker(object):
-
     """
     Helper class to unstack data / pivot with multi-level index
 
@@ -58,7 +61,8 @@ class _Unstacker(object):
     unstacked : DataFrame
     """
 
-    def __init__(self, values, index, level=-1, value_columns=None):
+    def __init__(self, values, index, level=-1, value_columns=None,
+                 fill_value=None):
 
         self.is_categorical = None
         if values.ndim == 1:
@@ -68,6 +72,7 @@ class _Unstacker(object):
             values = values[:, np.newaxis]
         self.values = values
         self.value_columns = value_columns
+        self.fill_value = fill_value
 
         if value_columns is None and values.shape[1] != 1:  # pragma: no cover
             raise ValueError('must pass column labels for multi-column data')
@@ -103,16 +108,12 @@ class _Unstacker(object):
         sizes = [len(x) for x in levs[:v] + levs[v + 1:] + [levs[v]]]
 
         comp_index, obs_ids = get_compressed_ids(to_sort, sizes)
-
-        # group_index = get_group_index(to_sort, sizes)
-        # comp_index, obs_ids = _compress_group_index(group_index)
-
         ngroups = len(obs_ids)
 
-        indexer = algos.groupsort_indexer(comp_index, ngroups)[0]
+        indexer = _algos.groupsort_indexer(comp_index, ngroups)[0]
         indexer = _ensure_platform_int(indexer)
 
-        self.sorted_values = com.take_nd(self.values, indexer, axis=0)
+        self.sorted_values = algos.take_nd(self.values, indexer, axis=0)
         self.sorted_labels = [l.take(indexer) for l in to_sort]
 
     def _make_selectors(self):
@@ -155,14 +156,14 @@ class _Unstacker(object):
             # rare case, level values not observed
             if len(obs_ids) < self.full_shape[1]:
                 inds = (value_mask.sum(0) > 0).nonzero()[0]
-                values = com.take_nd(values, inds, axis=1)
+                values = algos.take_nd(values, inds, axis=1)
                 columns = columns[inds]
 
         # may need to coerce categoricals here
         if self.is_categorical is not None:
-            values = [ Categorical.from_array(values[:,i],
-                                              categories=self.is_categorical.categories)
-                       for i in range(values.shape[-1]) ]
+            values = [Categorical.from_array(
+                values[:, i], categories=self.is_categorical.categories,
+                ordered=True) for i in range(values.shape[-1])]
 
         return DataFrame(values, index=index, columns=columns)
 
@@ -180,7 +181,7 @@ class _Unstacker(object):
             dtype = values.dtype
             new_values = np.empty(result_shape, dtype=dtype)
         else:
-            dtype, fill_value = _maybe_promote(values.dtype)
+            dtype, fill_value = _maybe_promote(values.dtype, self.fill_value)
             new_values = np.empty(result_shape, dtype=dtype)
             new_values.fill(fill_value)
 
@@ -188,8 +189,8 @@ class _Unstacker(object):
 
         # is there a simpler / faster way of doing this?
         for i in range(values.shape[1]):
-            chunk = new_values[:, i * width: (i + 1) * width]
-            mask_chunk = new_mask[:, i * width: (i + 1) * width]
+            chunk = new_values[:, i * width:(i + 1) * width]
+            mask_chunk = new_mask[:, i * width:(i + 1) * width]
 
             chunk.flat[self.mask] = self.sorted_values[:, i]
             mask_chunk.flat[self.mask] = True
@@ -202,10 +203,7 @@ class _Unstacker(object):
                 return self.removed_level
 
             lev = self.removed_level
-            vals = np.insert(lev.astype('object'), 0,
-                             _get_na_value(lev.dtype.type))
-
-            return lev._shallow_copy(vals)
+            return lev.insert(0, _get_na_value(lev.dtype.type))
 
         stride = len(self.removed_level) + self.lift
         width = len(self.value_columns)
@@ -232,20 +230,17 @@ class _Unstacker(object):
         # construct the new index
         if len(self.new_index_levels) == 1:
             lev, lab = self.new_index_levels[0], result_labels[0]
-            if not (lab == -1).any():
-                return lev.take(lab)
+            if (lab == -1).any():
+                lev = lev.insert(len(lev), _get_na_value(lev.dtype.type))
+            return lev.take(lab)
 
-            vals = np.insert(lev.astype('object'), len(lev),
-                             _get_na_value(lev.dtype.type)).take(lab)
+        return MultiIndex(levels=self.new_index_levels, labels=result_labels,
+                          names=self.new_index_names, verify_integrity=False)
 
-            return lev._shallow_copy(vals)
-
-        return MultiIndex(levels=self.new_index_levels,
-                          labels=result_labels,
-                          names=self.new_index_names,
-                          verify_integrity=False)
 
 def _unstack_multiple(data, clocs):
+    from pandas.core.groupby import decons_obs_group_ids
+
     if len(clocs) == 0:
         return data
 
@@ -265,10 +260,11 @@ def _unstack_multiple(data, clocs):
     rnames = [index.names[i] for i in rlocs]
 
     shape = [len(x) for x in clevels]
-    group_index = get_group_index(clabels, shape)
+    group_index = get_group_index(clabels, shape, sort=False, xnull=False)
 
     comp_ids, obs_ids = _compress_group_index(group_index, sort=False)
-    recons_labels = decons_group_index(obs_ids, shape)
+    recons_labels = decons_obs_group_ids(comp_ids, obs_ids, shape, clabels,
+                                         xnull=False)
 
     dummy_index = MultiIndex(levels=rlevels + [obs_ids],
                              labels=rlabels + [comp_ids],
@@ -287,12 +283,11 @@ def _unstack_multiple(data, clocs):
             for i in range(len(clocs)):
                 val = clocs[i]
                 result = result.unstack(val)
-                clocs = [val if i > val else val - 1 for val in clocs]
+                clocs = [v if i > v else v - 1 for v in clocs]
 
             return result
 
-        dummy = DataFrame(data.values, index=dummy_index,
-                          columns=data.columns)
+        dummy = DataFrame(data.values, index=dummy_index, columns=data.columns)
 
         unstacked = dummy.unstack('__placeholder__')
         if isinstance(unstacked, Series):
@@ -322,12 +317,17 @@ def pivot(self, index=None, columns=None, values=None):
     See DataFrame.pivot
     """
     if values is None:
-        indexed = self.set_index([index, columns])
+        cols = [columns] if index is None else [index, columns]
+        append = index is None
+        indexed = self.set_index(cols, append=append)
         return indexed.unstack(columns)
     else:
+        if index is None:
+            index = self.index
+        else:
+            index = self[index]
         indexed = Series(self[values].values,
-                         index=MultiIndex.from_arrays([self[index],
-                                                       self[columns]]))
+                         index=MultiIndex.from_arrays([index, self[columns]]))
         return indexed.unstack(columns)
 
 
@@ -392,21 +392,22 @@ def _slow_pivot(index, columns, values):
     return DataFrame(tree)
 
 
-def unstack(obj, level):
+def unstack(obj, level, fill_value=None):
     if isinstance(level, (tuple, list)):
         return _unstack_multiple(obj, level)
 
     if isinstance(obj, DataFrame):
         if isinstance(obj.index, MultiIndex):
-            return _unstack_frame(obj, level)
+            return _unstack_frame(obj, level, fill_value=fill_value)
         else:
             return obj.T.stack(dropna=False)
     else:
-        unstacker = _Unstacker(obj.values, obj.index, level=level)
+        unstacker = _Unstacker(obj.values, obj.index, level=level,
+                               fill_value=fill_value)
         return unstacker.get_result()
 
 
-def _unstack_frame(obj, level):
+def _unstack_frame(obj, level, fill_value=None):
     from pandas.core.internals import BlockManager, make_block
 
     if obj._is_mixed_type:
@@ -422,7 +423,8 @@ def _unstack_frame(obj, level):
         for blk in obj._data.blocks:
             blk_items = obj._data.items[blk.mgr_locs.indexer]
             bunstacker = _Unstacker(blk.values.T, obj.index, level=level,
-                                    value_columns=blk_items)
+                                    value_columns=blk_items,
+                                    fill_value=fill_value)
             new_items = bunstacker.get_new_columns()
             new_placement = new_columns.get_indexer(new_items)
             new_values, mask = bunstacker.get_new_values()
@@ -438,14 +440,15 @@ def _unstack_frame(obj, level):
         return result.ix[:, mask_frame.sum(0) > 0]
     else:
         unstacker = _Unstacker(obj.values, obj.index, level=level,
-                               value_columns=obj.columns)
+                               value_columns=obj.columns,
+                               fill_value=fill_value)
         return unstacker.get_result()
 
 
 def get_compressed_ids(labels, sizes):
-    from pandas.core.groupby import get_flat_ids
+    from pandas.core.groupby import get_group_index
 
-    ids = get_flat_ids(labels, sizes, True)
+    ids = get_group_index(labels, sizes, sort=True, xnull=False)
     return _compress_group_index(ids, sort=True)
 
 
@@ -458,6 +461,13 @@ def stack(frame, level=-1, dropna=True):
     -------
     stacked : Series
     """
+
+    def factorize(index):
+        if index.is_unique:
+            return index, np.arange(len(index))
+        cat = Categorical(index, ordered=True)
+        return cat.categories, cat.codes
+
     N, K = frame.shape
     if isinstance(frame.columns, MultiIndex):
         if frame.columns._reference_duplicate_name(level):
@@ -472,20 +482,21 @@ def stack(frame, level=-1, dropna=True):
         return _stack_multi_columns(frame, level_num=level_num, dropna=dropna)
     elif isinstance(frame.index, MultiIndex):
         new_levels = list(frame.index.levels)
-        new_levels.append(frame.columns)
-
         new_labels = [lab.repeat(K) for lab in frame.index.labels]
-        new_labels.append(np.tile(np.arange(K), N).ravel())
+
+        clev, clab = factorize(frame.columns)
+        new_levels.append(clev)
+        new_labels.append(np.tile(clab, N).ravel())
 
         new_names = list(frame.index.names)
         new_names.append(frame.columns.name)
         new_index = MultiIndex(levels=new_levels, labels=new_labels,
                                names=new_names, verify_integrity=False)
     else:
-        ilabels = np.arange(N).repeat(K)
-        clabels = np.tile(np.arange(K), N).ravel()
-        new_index = MultiIndex(levels=[frame.index, frame.columns],
-                               labels=[ilabels, clabels],
+        levels, (ilab, clab) = zip(*map(factorize, (frame.index,
+                                                    frame.columns)))
+        labels = ilab.repeat(K), np.tile(clab, N).ravel()
+        new_index = MultiIndex(levels=levels, labels=labels,
                                names=[frame.index.name, frame.columns.name],
                                verify_integrity=False)
 
@@ -530,8 +541,8 @@ def stack_multiple(frame, level, dropna=True):
             level = updated_level
 
     else:
-        raise ValueError("level should contain all level names or all level numbers, "
-                         "not a mixture of the two.")
+        raise ValueError("level should contain all level names or all level "
+                         "numbers, not a mixture of the two.")
 
     return result
 
@@ -539,12 +550,12 @@ def stack_multiple(frame, level, dropna=True):
 def _stack_multi_columns(frame, level_num=-1, dropna=True):
     def _convert_level_number(level_num, columns):
         """
-        Logic for converting the level number to something
-        we can safely pass to swaplevel:
+        Logic for converting the level number to something we can safely pass
+        to swaplevel:
 
-        We generally want to convert the level number into
-        a level name, except when columns do not have names,
-        in which case we must leave as a level number
+        We generally want to convert the level number into a level name, except
+        when columns do not have names, in which case we must leave as a level
+        number
         """
         if level_num in columns.names:
             return columns.names[level_num]
@@ -576,10 +587,9 @@ def _stack_multi_columns(frame, level_num=-1, dropna=True):
 
     # tuple list excluding level for grouping columns
     if len(frame.columns.levels) > 2:
-        tuples = list(zip(*[
-            lev.take(lab) for lev, lab in
-            zip(this.columns.levels[:-1], this.columns.labels[:-1])
-        ]))
+        tuples = list(zip(*[lev.take(lab)
+                            for lev, lab in zip(this.columns.levels[:-1],
+                                                this.columns.labels[:-1])]))
         unique_groups = [key for key, _ in itertools.groupby(tuples)]
         new_names = this.columns.names[:-1]
         new_columns = MultiIndex.from_tuples(unique_groups, names=new_names)
@@ -614,7 +624,7 @@ def _stack_multi_columns(frame, level_num=-1, dropna=True):
         new_data[key] = value_slice.ravel()
 
     if len(drop_cols) > 0:
-        new_columns = new_columns - drop_cols
+        new_columns = new_columns.difference(drop_cols)
 
     N = len(this)
 
@@ -644,8 +654,8 @@ def _stack_multi_columns(frame, level_num=-1, dropna=True):
     return result
 
 
-def melt(frame, id_vars=None, value_vars=None,
-         var_name=None, value_name='value', col_level=None):
+def melt(frame, id_vars=None, value_vars=None, var_name=None,
+         value_name='value', col_level=None):
     """
     "Unpivots" a DataFrame from wide format to long format, optionally leaving
     identifier variables set.
@@ -761,8 +771,8 @@ def melt(frame, id_vars=None, value_vars=None,
             if len(frame.columns.names) == len(set(frame.columns.names)):
                 var_name = frame.columns.names
             else:
-                var_name = ['variable_%s' % i for i in
-                            range(len(frame.columns.names))]
+                var_name = ['variable_%s' % i
+                            for i in range(len(frame.columns.names))]
         else:
             var_name = [frame.columns.name if frame.columns.name is not None
                         else 'variable']
@@ -911,6 +921,7 @@ def wide_to_long(df, stubnames, i, j):
     `pandas.melt` under the hood, but is hard-coded to "do the right thing"
     in a typicaly case.
     """
+
     def get_var_names(df, regex):
         return df.filter(regex=regex).columns.tolist()
 
@@ -930,49 +941,16 @@ def wide_to_long(df, stubnames, i, j):
     if i not in id_vars:
         id_vars += [i]
 
-    stub = stubnames.pop(0)
-    newdf = melt_stub(df, stub, id_vars, j)
+    newdf = melt_stub(df, stubnames[0], id_vars, j)
 
-    for stub in stubnames:
+    for stub in stubnames[1:]:
         new = melt_stub(df, stub, id_vars, j)
         newdf = newdf.merge(new, how="outer", on=id_vars + [j], copy=False)
     return newdf.set_index([i, j])
 
 
-def convert_dummies(data, cat_variables, prefix_sep='_'):
-    """
-    Compute DataFrame with specified columns converted to dummy variables (0 /
-    1). Result columns will be prefixed with the column name, then the level
-    name, e.g. 'A_foo' for column A and level foo
-
-    Parameters
-    ----------
-    data : DataFrame
-    cat_variables : list-like
-        Must be column names in the DataFrame
-    prefix_sep : string, default '_'
-        String to use to separate column name from dummy level
-
-    Returns
-    -------
-    dummies : DataFrame
-    """
-    import warnings
-
-    warnings.warn("'convert_dummies' is deprecated and will be removed "
-                  "in a future release. Use 'get_dummies' instead.",
-                  FutureWarning)
-
-    result = data.drop(cat_variables, axis=1)
-    for variable in cat_variables:
-        dummies = _get_dummies_1d(data[variable], prefix=variable,
-                                  prefix_sep=prefix_sep)
-        result = result.join(dummies)
-    return result
-
-
 def get_dummies(data, prefix=None, prefix_sep='_', dummy_na=False,
-                columns=None):
+                columns=None, sparse=False, drop_first=False):
     """
     Convert categorical variable into dummy/indicator variables
 
@@ -993,17 +971,27 @@ def get_dummies(data, prefix=None, prefix_sep='_', dummy_na=False,
         Column names in the DataFrame to be encoded.
         If `columns` is None then all the columns with
         `object` or `category` dtype will be converted.
+    sparse : bool, default False
+        Whether the dummy columns should be sparse or not.  Returns
+        SparseDataFrame if `data` is a Series or if all columns are included.
+        Otherwise returns a DataFrame with some SparseBlocks.
 
+        .. versionadded:: 0.16.1
+    drop_first : bool, default False
+        Whether to get k-1 dummies out of n categorical levels by removing the
+        first level.
+
+        .. versionadded:: 0.18.0
     Returns
     -------
-    dummies : DataFrame
+    dummies : DataFrame or SparseDataFrame
 
     Examples
     --------
     >>> import pandas as pd
     >>> s = pd.Series(list('abca'))
 
-    >>> get_dummies(s)
+    >>> pd.get_dummies(s)
        a  b  c
     0  1  0  0
     1  0  1  0
@@ -1012,29 +1000,46 @@ def get_dummies(data, prefix=None, prefix_sep='_', dummy_na=False,
 
     >>> s1 = ['a', 'b', np.nan]
 
-    >>> get_dummies(s1)
+    >>> pd.get_dummies(s1)
        a  b
     0  1  0
     1  0  1
     2  0  0
 
-    >>> get_dummies(s1, dummy_na=True)
+    >>> pd.get_dummies(s1, dummy_na=True)
        a  b  NaN
     0  1  0    0
     1  0  1    0
     2  0  0    1
 
-    >>> df = DataFrame({'A': ['a', 'b', 'a'], 'B': ['b', 'a', 'c'],
+    >>> df = pd.DataFrame({'A': ['a', 'b', 'a'], 'B': ['b', 'a', 'c'],
                         'C': [1, 2, 3]})
 
-    >>> get_dummies(df, prefix=['col1', 'col2']):
+    >>> pd.get_dummies(df, prefix=['col1', 'col2'])
        C  col1_a  col1_b  col2_a  col2_b  col2_c
     0  1       1       0       0       1       0
     1  2       0       1       1       0       0
     2  3       1       0       0       0       1
 
-    See also ``Series.str.get_dummies``.
+    >>> pd.get_dummies(pd.Series(list('abcaa')))
+       a  b  c
+    0  1  0  0
+    1  0  1  0
+    2  0  0  1
+    3  1  0  0
+    4  1  0  0
 
+    >>> pd.get_dummies(pd.Series(list('abcaa')), drop_first=True))
+       b  c
+    0  0  0
+    1  1  0
+    2  0  1
+    3  0  0
+    4  0  0
+
+    See Also
+    --------
+    Series.str.get_dummies
     """
     from pandas.tools.merge import concat
     from itertools import cycle
@@ -1043,21 +1048,20 @@ def get_dummies(data, prefix=None, prefix_sep='_', dummy_na=False,
         # determine columns being encoded
 
         if columns is None:
-            columns_to_encode = data.select_dtypes(include=['object',
-                'category']).columns
+            columns_to_encode = data.select_dtypes(
+                include=['object', 'category']).columns
         else:
             columns_to_encode = columns
 
         # validate prefixes and separator to avoid silently dropping cols
         def check_len(item, name):
-            length_msg = ("Length of '{0}' ({1}) did "
-                           "not match the length of the columns "
-                           "being encoded ({2}).")
+            length_msg = ("Length of '{0}' ({1}) did not match the length of "
+                          "the columns being encoded ({2}).")
 
             if com.is_list_like(item):
                 if not len(item) == len(columns_to_encode):
                     raise ValueError(length_msg.format(name, len(item),
-                                     len(columns_to_encode)))
+                                                       len(columns_to_encode)))
 
         check_len(prefix, 'prefix')
         check_len(prefix_sep, 'prefix_sep')
@@ -1075,47 +1079,57 @@ def get_dummies(data, prefix=None, prefix_sep='_', dummy_na=False,
         elif isinstance(prefix_sep, dict):
             prefix_sep = [prefix_sep[col] for col in columns_to_encode]
 
-        result = data.drop(columns_to_encode, axis=1)
-        with_dummies = [result]
+        if set(columns_to_encode) == set(data.columns):
+            with_dummies = []
+        else:
+            with_dummies = [data.drop(columns_to_encode, axis=1)]
+
         for (col, pre, sep) in zip(columns_to_encode, prefix, prefix_sep):
 
-            dummy = _get_dummies_1d(data[col], prefix=pre,
-                                    prefix_sep=sep, dummy_na=dummy_na)
+            dummy = _get_dummies_1d(data[col], prefix=pre, prefix_sep=sep,
+                                    dummy_na=dummy_na, sparse=sparse,
+                                    drop_first=drop_first)
             with_dummies.append(dummy)
         result = concat(with_dummies, axis=1)
     else:
-        result = _get_dummies_1d(data, prefix, prefix_sep, dummy_na)
+        result = _get_dummies_1d(data, prefix, prefix_sep, dummy_na,
+                                 sparse=sparse, drop_first=drop_first)
     return result
 
 
-def _get_dummies_1d(data, prefix, prefix_sep='_', dummy_na=False):
+def _get_dummies_1d(data, prefix, prefix_sep='_', dummy_na=False,
+                    sparse=False, drop_first=False):
     # Series avoids inconsistent NaN handling
-    cat = Categorical.from_array(Series(data))
+    cat = Categorical.from_array(Series(data), ordered=True)
     levels = cat.categories
 
-    # if all NaN
-    if not dummy_na and len(levels) == 0:
+    def get_empty_Frame(data, sparse):
         if isinstance(data, Series):
             index = data.index
         else:
             index = np.arange(len(data))
-        return DataFrame(index=index)
+        if not sparse:
+            return DataFrame(index=index)
+        else:
+            return SparseDataFrame(index=index)
+
+    # if all NaN
+    if not dummy_na and len(levels) == 0:
+        return get_empty_Frame(data, sparse)
+
+    codes = cat.codes.copy()
+    if dummy_na:
+        codes[codes == -1] = len(cat.categories)
+        levels = np.append(cat.categories, np.nan)
+
+    # if dummy_na, we just fake a nan level. drop_first will drop it again
+    if drop_first and len(levels) == 1:
+        return get_empty_Frame(data, sparse)
 
     number_of_cols = len(levels)
-    if dummy_na:
-        number_of_cols += 1
-
-    dummy_mat = np.eye(number_of_cols).take(cat.codes, axis=0)
-
-    if dummy_na:
-        levels = np.append(cat.categories, np.nan)
-    else:
-        # reset NaN GH4446
-        dummy_mat[cat.codes == -1] = 0
 
     if prefix is not None:
-        dummy_cols = ['%s%s%s' % (prefix, prefix_sep, v)
-                      for v in levels]
+        dummy_cols = ['%s%s%s' % (prefix, prefix_sep, v) for v in levels]
     else:
         dummy_cols = levels
 
@@ -1124,7 +1138,40 @@ def _get_dummies_1d(data, prefix, prefix_sep='_', dummy_na=False):
     else:
         index = None
 
-    return DataFrame(dummy_mat, index=index, columns=dummy_cols)
+    if sparse:
+        sparse_series = {}
+        N = len(data)
+        sp_indices = [[] for _ in range(len(dummy_cols))]
+        for ndx, code in enumerate(codes):
+            if code == -1:
+                # Blank entries if not dummy_na and code == -1, #GH4446
+                continue
+            sp_indices[code].append(ndx)
+
+        if drop_first:
+            # remove first categorical level to avoid perfect collinearity
+            # GH12042
+            sp_indices = sp_indices[1:]
+            dummy_cols = dummy_cols[1:]
+        for col, ixs in zip(dummy_cols, sp_indices):
+            sarr = SparseArray(np.ones(len(ixs)),
+                               sparse_index=IntIndex(N, ixs), fill_value=0)
+            sparse_series[col] = SparseSeries(data=sarr, index=index)
+
+        return SparseDataFrame(sparse_series, index=index, columns=dummy_cols)
+
+    else:
+        dummy_mat = np.eye(number_of_cols).take(codes, axis=0)
+
+        if not dummy_na:
+            # reset NaN GH4446
+            dummy_mat[codes == -1] = 0
+
+        if drop_first:
+            # remove first GH12042
+            dummy_mat = dummy_mat[:, 1:]
+            dummy_cols = dummy_cols[1:]
+        return DataFrame(dummy_mat, index=index, columns=dummy_cols)
 
 
 def make_axis_dummies(frame, axis='minor', transform=None):
@@ -1148,17 +1195,14 @@ def make_axis_dummies(frame, axis='minor', transform=None):
     dummies : DataFrame
         Column names taken from chosen axis
     """
-    numbers = {
-        'major': 0,
-        'minor': 1
-    }
+    numbers = {'major': 0, 'minor': 1}
     num = numbers.get(axis, axis)
 
     items = frame.index.levels[num]
     labels = frame.index.labels[num]
     if transform is not None:
         mapped_items = items.map(transform)
-        cat = Categorical.from_array(mapped_items.take(labels))
+        cat = Categorical.from_array(mapped_items.take(labels), ordered=True)
         labels = cat.codes
         items = cat.categories
 

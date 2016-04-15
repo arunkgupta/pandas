@@ -1,16 +1,12 @@
 # pylint: disable-msg=E1101,W0612
-from datetime import datetime, time, timedelta
+from datetime import datetime
 import sys
 import os
-
 import nose
-
 import numpy as np
-randn = np.random.randn
 
-from pandas import (Index, Series, TimeSeries, DataFrame,
-                    isnull, date_range, Timestamp, DatetimeIndex,
-                    Int64Index, to_datetime, bdate_range)
+from pandas import (Index, Series, date_range, Timestamp,
+                    DatetimeIndex, Int64Index, to_datetime)
 
 import pandas.core.datetools as datetools
 import pandas.tseries.offsets as offsets
@@ -19,13 +15,13 @@ import pandas as pd
 from pandas.util.testing import assert_series_equal, assert_almost_equal
 import pandas.util.testing as tm
 
-from pandas.compat import(
-    range, long, StringIO, lrange, lmap, map, zip, cPickle as pickle, product
-)
+from pandas.compat import StringIO, cPickle as pickle
 from pandas import read_pickle
 from numpy.random import rand
 import pandas.compat as compat
 from pandas.core.datetools import BDay
+
+randn = np.random.randn
 
 
 # infortunately, too much has changed to handle these legacy pickles
@@ -90,7 +86,7 @@ class LegacySupport(object):
         ex_index = DatetimeIndex([], freq='B')
 
         self.assertTrue(result.index.equals(ex_index))
-        tm.assert_isinstance(result.index.freq, offsets.BDay)
+        tm.assertIsInstance(result.index.freq, offsets.BDay)
         self.assertEqual(len(result), 0)
 
     def test_arithmetic_interaction(self):
@@ -102,12 +98,12 @@ class LegacySupport(object):
 
         result = dseries + oseries
         expected = dseries * 2
-        tm.assert_isinstance(result.index, DatetimeIndex)
+        tm.assertIsInstance(result.index, DatetimeIndex)
         assert_series_equal(result, expected)
 
         result = dseries + oseries[:5]
         expected = dseries + dseries[:5]
-        tm.assert_isinstance(result.index, DatetimeIndex)
+        tm.assertIsInstance(result.index, DatetimeIndex)
         assert_series_equal(result, expected)
 
     def test_join_interaction(self):
@@ -119,7 +115,7 @@ class LegacySupport(object):
             ea, eb, ec = left.join(DatetimeIndex(right), how=how,
                                    return_indexers=True)
 
-            tm.assert_isinstance(ra, DatetimeIndex)
+            tm.assertIsInstance(ra, DatetimeIndex)
             self.assertTrue(ra.equals(ea))
 
             assert_almost_equal(rb, eb)
@@ -143,8 +139,8 @@ class LegacySupport(object):
         filepath = os.path.join(pth, 'data', 'daterange_073.pickle')
 
         rng = read_pickle(filepath)
-        tm.assert_isinstance(rng[0], datetime)
-        tm.assert_isinstance(rng.offset, offsets.BDay)
+        tm.assertIsInstance(rng[0], datetime)
+        tm.assertIsInstance(rng.offset, offsets.BDay)
         self.assertEqual(rng.values.dtype, object)
 
     def test_setops(self):
@@ -153,17 +149,17 @@ class LegacySupport(object):
 
         result = index[:5].union(obj_index[5:])
         expected = index
-        tm.assert_isinstance(result, DatetimeIndex)
+        tm.assertIsInstance(result, DatetimeIndex)
         self.assertTrue(result.equals(expected))
 
         result = index[:10].intersection(obj_index[5:])
         expected = index[5:10]
-        tm.assert_isinstance(result, DatetimeIndex)
+        tm.assertIsInstance(result, DatetimeIndex)
         self.assertTrue(result.equals(expected))
 
         result = index[:10] - obj_index[5:]
         expected = index[:5]
-        tm.assert_isinstance(result, DatetimeIndex)
+        tm.assertIsInstance(result, DatetimeIndex)
         self.assertTrue(result.equals(expected))
 
     def test_index_conversion(self):
@@ -179,10 +175,10 @@ class LegacySupport(object):
         rng = date_range('1/1/2000', periods=10)
 
         result = rng.tolist()
-        tm.assert_isinstance(result[0], Timestamp)
+        tm.assertIsInstance(result[0], Timestamp)
 
     def test_object_convert_fail(self):
-        idx = DatetimeIndex([NaT])
+        idx = DatetimeIndex([np.NaT])
         self.assertRaises(ValueError, idx.astype, 'O')
 
     def test_setops_conversion_fail(self):
@@ -199,17 +195,16 @@ class LegacySupport(object):
         self.assertTrue(result.equals(expected))
 
     def test_legacy_time_rules(self):
-        rules = [('WEEKDAY', 'B'),
-                 ('EOM', 'BM'),
-                 ('W@MON', 'W-MON'), ('W@TUE', 'W-TUE'), ('W@WED', 'W-WED'),
-                 ('W@THU', 'W-THU'), ('W@FRI', 'W-FRI'),
-                 ('Q@JAN', 'BQ-JAN'), ('Q@FEB', 'BQ-FEB'), ('Q@MAR', 'BQ-MAR'),
-                 ('A@JAN', 'BA-JAN'), ('A@FEB', 'BA-FEB'), ('A@MAR', 'BA-MAR'),
-                 ('A@APR', 'BA-APR'), ('A@MAY', 'BA-MAY'), ('A@JUN', 'BA-JUN'),
-                 ('A@JUL', 'BA-JUL'), ('A@AUG', 'BA-AUG'), ('A@SEP', 'BA-SEP'),
-                 ('A@OCT', 'BA-OCT'), ('A@NOV', 'BA-NOV'), ('A@DEC', 'BA-DEC'),
-                 ('WOM@1FRI', 'WOM-1FRI'), ('WOM@2FRI', 'WOM-2FRI'),
-                 ('WOM@3FRI', 'WOM-3FRI'), ('WOM@4FRI', 'WOM-4FRI')]
+        rules = [('WEEKDAY', 'B'), ('EOM', 'BM'), ('W@MON', 'W-MON'),
+                 ('W@TUE', 'W-TUE'), ('W@WED', 'W-WED'), ('W@THU', 'W-THU'),
+                 ('W@FRI', 'W-FRI'), ('Q@JAN', 'BQ-JAN'), ('Q@FEB', 'BQ-FEB'),
+                 ('Q@MAR', 'BQ-MAR'), ('A@JAN', 'BA-JAN'), ('A@FEB', 'BA-FEB'),
+                 ('A@MAR', 'BA-MAR'), ('A@APR', 'BA-APR'), ('A@MAY', 'BA-MAY'),
+                 ('A@JUN', 'BA-JUN'), ('A@JUL', 'BA-JUL'), ('A@AUG', 'BA-AUG'),
+                 ('A@SEP', 'BA-SEP'), ('A@OCT', 'BA-OCT'), ('A@NOV', 'BA-NOV'),
+                 ('A@DEC', 'BA-DEC'), ('WOM@1FRI', 'WOM-1FRI'),
+                 ('WOM@2FRI', 'WOM-2FRI'), ('WOM@3FRI', 'WOM-3FRI'),
+                 ('WOM@4FRI', 'WOM-4FRI')]
 
         start, end = '1/1/2000', '1/1/2010'
 
@@ -232,6 +227,7 @@ class LegacySupport(object):
     def test_rule_aliases(self):
         rule = datetools.to_offset('10us')
         self.assertEqual(rule, datetools.Micro(10))
+
 
 if __name__ == '__main__':
     nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure'],

@@ -2,20 +2,24 @@
 Module parse to/from Excel
 """
 
-#----------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # ExcelFile class
+from datetime import datetime, date, time, MINYEAR
+
 import os
-import datetime
 import abc
 import numpy as np
 
+from pandas.core.frame import DataFrame
 from pandas.io.parsers import TextParser
-from pandas.io.common import _is_url, _urlopen
+from pandas.io.common import (_is_url, _urlopen, _validate_header_arg,
+                              EmptyDataError, get_filepath_or_buffer)
 from pandas.tseries.period import Period
 from pandas import json
-from pandas.compat import map, zip, reduce, range, lrange, u, add_metaclass
+from pandas.compat import (map, zip, reduce, range, lrange, u, add_metaclass,
+                           string_types)
 from pandas.core import config
-from pandas.core.common import pprint_thing
+from pandas.formats.printing import pprint_thing
 import pandas.compat as compat
 import pandas.compat.openpyxl_compat as openpyxl_compat
 import pandas.core.common as com
@@ -53,9 +57,11 @@ def get_writer(engine_name):
             # with version-less openpyxl engine
             # make sure we make the intelligent choice for the user
             if LooseVersion(openpyxl.__version__) < '2.0.0':
-                 return _writers['openpyxl1']
+                return _writers['openpyxl1']
+            elif LooseVersion(openpyxl.__version__) < '2.2.0':
+                return _writers['openpyxl20']
             else:
-                 return _writers['openpyxl2']
+                return _writers['openpyxl22']
         except ImportError:
             # fall through to normal exception handling below
             pass
@@ -66,39 +72,77 @@ def get_writer(engine_name):
         raise ValueError("No Excel writer '%s'" % engine_name)
 
 
-def read_excel(io, sheetname=0, **kwds):
-    """Read an Excel table into a pandas DataFrame
+def read_excel(io, sheetname=0, header=0, skiprows=None, skip_footer=0,
+               index_col=None, names=None, parse_cols=None, parse_dates=False,
+               date_parser=None, na_values=None, thousands=None,
+               convert_float=True, has_index_names=None, converters=None,
+               engine=None, squeeze=False, **kwds):
+    """
+    Read an Excel table into a pandas DataFrame
 
     Parameters
     ----------
-    io : string, file-like object, or xlrd workbook.
+    io : string, path object (pathlib.Path or py._path.local.LocalPath),
+        file-like object, pandas ExcelFile, or xlrd workbook.
         The string could be a URL. Valid URL schemes include http, ftp, s3,
         and file. For file URLs, a host is expected. For instance, a local
         file could be file://localhost/path/to/workbook.xlsx
-    sheetname : string or int, default 0
-        Name of Excel sheet or the page number of the sheet
-    header : int, default 0
-        Row to use for the column labels of the parsed DataFrame
+    sheetname : string, int, mixed list of strings/ints, or None, default 0
+
+        Strings are used for sheet names, Integers are used in zero-indexed
+        sheet positions.
+
+        Lists of strings/integers are used to request multiple sheets.
+
+        Specify None to get all sheets.
+
+        str|int -> DataFrame is returned.
+        list|None -> Dict of DataFrames is returned, with keys representing
+        sheets.
+
+        Available Cases
+
+        * Defaults to 0 -> 1st sheet as a DataFrame
+        * 1 -> 2nd sheet as a DataFrame
+        * "Sheet1" -> 1st sheet as a DataFrame
+        * [0,1,"Sheet5"] -> 1st, 2nd & 5th sheet as a dictionary of DataFrames
+        * None -> All sheets as a dictionary of DataFrames
+
+    header : int, list of ints, default 0
+        Row (0-indexed) to use for the column labels of the parsed
+        DataFrame. If a list of integers is passed those row positions will
+        be combined into a ``MultiIndex``
     skiprows : list-like
         Rows to skip at the beginning (0-indexed)
     skip_footer : int, default 0
         Rows at the end to skip (0-indexed)
+    index_col : int, list of ints, default None
+        Column (0-indexed) to use as the row labels of the DataFrame.
+        Pass None if there is no such column.  If a list is passed,
+        those columns will be combined into a ``MultiIndex``
+    names : array-like, default None
+        List of column names to use. If file contains no header row,
+        then you should explicitly pass header=None
     converters : dict, default None
         Dict of functions for converting values in certain columns. Keys can
         either be integers or column labels, values are functions that take one
         input argument, the Excel cell content, and return the transformed
         content.
-    index_col : int, default None
-        Column to use as the row labels of the DataFrame. Pass None if
-        there is no such column
     parse_cols : int or list, default None
         * If None then parse all columns,
         * If int then indicates last column to be parsed
         * If list of ints then indicates list of column numbers to be parsed
         * If string then indicates comma separated list of column names and
           column ranges (e.g. "A:E" or "A,C,E:F")
+    squeeze : boolean, default False
+        If the parsed data only contains one column then return a Series
     na_values : list-like, default None
         List of additional strings to recognize as NA/NaN
+    thousands : str, default None
+        Thousands separator for parsing string columns to numeric.  Note that
+        this parameter is only necessary for columns stored as TEXT in Excel,
+        any numeric columns will automatically be parsed, regardless of display
+        format.
     keep_default_na : bool, default True
         If na_values are specified and keep_default_na is False the default NaN
         values are overridden, otherwise they're appended to
@@ -111,40 +155,44 @@ def read_excel(io, sheetname=0, **kwds):
         convert integral floats to int (i.e., 1.0 --> 1). If False, all numeric
         data will be read in as floats: Excel stores all numbers as floats
         internally
-    has_index_names : boolean, default False
-        True if the cols defined in index_col have an index name and are
-        not in the header. Index name will be placed on a separate line below
-        the header.
+    has_index_names : boolean, default None
+        DEPRECATED: for version 0.17+ index names will be automatically
+        inferred based on index_col.  To read Excel output from 0.16.2 and
+        prior that had saved index names, use True.
 
     Returns
     -------
-    parsed : DataFrame
-        DataFrame from the passed in Excel file
-
+    parsed : DataFrame or Dict of DataFrames
+        DataFrame from the passed in Excel file.  See notes in sheetname
+        argument for more information on when a Dict of Dataframes is returned.
     """
-    if 'kind' in kwds:
-        kwds.pop('kind')
-        warn("kind keyword is no longer supported in read_excel and may be "
-             "removed in a future version", FutureWarning)
+    if not isinstance(io, ExcelFile):
+        io = ExcelFile(io, engine=engine)
 
-    engine = kwds.pop('engine', None)
-
-    return ExcelFile(io, engine=engine).parse(sheetname=sheetname, **kwds)
+    return io._parse_excel(
+        sheetname=sheetname, header=header, skiprows=skiprows,
+        index_col=index_col, parse_cols=parse_cols, parse_dates=parse_dates,
+        date_parser=date_parser, na_values=na_values, thousands=thousands,
+        convert_float=convert_float, has_index_names=has_index_names,
+        skip_footer=skip_footer, converters=converters,
+        squeeze=squeeze, **kwds)
 
 
 class ExcelFile(object):
     """
     Class for parsing tabular excel sheets into DataFrame objects.
-    Uses xlrd. See ExcelFile.parse for more documentation
+    Uses xlrd. See read_excel for more documentation
 
     Parameters
     ----------
-    io : string, file-like object or xlrd workbook
-        If a string, expected to be a path to xls or xlsx file
+    io : string, path object (pathlib.Path or py._path.local.LocalPath),
+        file-like object or xlrd workbook
+        If a string or path object, expected to be a path to xls or xlsx file
     engine: string, default None
         If io is not a buffer or path, this must be set to identify io.
         Acceptable values are None or xlrd
     """
+
     def __init__(self, io, **kwds):
 
         import xlrd  # throw an ImportError if we need to
@@ -161,77 +209,37 @@ class ExcelFile(object):
         if engine is not None and engine != 'xlrd':
             raise ValueError("Unknown engine: %s" % engine)
 
-        if isinstance(io, compat.string_types):
-            if _is_url(io):
-                data = _urlopen(io).read()
-                self.book = xlrd.open_workbook(file_contents=data)
-            else:
-                self.book = xlrd.open_workbook(io)
-        elif engine == 'xlrd' and isinstance(io, xlrd.Book):
+        # If io is a url, want to keep the data as bytes so can't pass
+        # to get_filepath_or_buffer()
+        if _is_url(io):
+            io = _urlopen(io)
+        # Deal with S3 urls, path objects, etc. Will convert them to
+        # buffer or path string
+        io, _, _ = get_filepath_or_buffer(io)
+
+        if engine == 'xlrd' and isinstance(io, xlrd.Book):
             self.book = io
         elif not isinstance(io, xlrd.Book) and hasattr(io, "read"):
             # N.B. xlrd.Book has a read attribute too
             data = io.read()
             self.book = xlrd.open_workbook(file_contents=data)
+        elif isinstance(io, compat.string_types):
+            self.book = xlrd.open_workbook(io)
         else:
             raise ValueError('Must explicitly set engine if not passing in'
                              ' buffer or path for io.')
 
     def parse(self, sheetname=0, header=0, skiprows=None, skip_footer=0,
               index_col=None, parse_cols=None, parse_dates=False,
-              date_parser=None, na_values=None, thousands=None, chunksize=None,
-              convert_float=True, has_index_names=False, converters=None, **kwds):
-        """Read an Excel table into DataFrame
-
-        Parameters
-        ----------
-        sheetname : string or integer
-            Name of Excel sheet or the page number of the sheet
-        header : int, default 0
-            Row to use for the column labels of the parsed DataFrame
-        skiprows : list-like
-            Rows to skip at the beginning (0-indexed)
-        skip_footer : int, default 0
-            Rows at the end to skip (0-indexed)
-        converters : dict, default None
-            Dict of functions for converting values in certain columns. Keys can
-            either be integers or column labels
-        index_col : int, default None
-            Column to use as the row labels of the DataFrame. Pass None if
-            there is no such column
-        parse_cols : int or list, default None
-            * If None then parse all columns
-            * If int then indicates last column to be parsed
-            * If list of ints then indicates list of column numbers to be
-              parsed
-            * If string then indicates comma separated list of column names and
-              column ranges (e.g. "A:E" or "A,C,E:F")
-        parse_dates : boolean, default False
-            Parse date Excel values,
-        date_parser : function default None
-            Date parsing function
-        na_values : list-like, default None
-            List of additional strings to recognize as NA/NaN
-        thousands : str, default None
-            Thousands separator
-        chunksize : int, default None
-            Size of file chunk to read for lazy evaluation.
-        convert_float : boolean, default True
-            convert integral floats to int (i.e., 1.0 --> 1). If False, all
-            numeric data will be read in as floats: Excel stores all numbers as
-            floats internally.
-        has_index_names : boolean, default False
-            True if the cols defined in index_col have an index name and are
-            not in the header
-
-        Returns
-        -------
-        parsed : DataFrame
-            DataFrame parsed from the Excel file
+              date_parser=None, na_values=None, thousands=None,
+              convert_float=True, has_index_names=None,
+              converters=None, squeeze=False, **kwds):
         """
-        skipfooter = kwds.pop('skipfooter', None)
-        if skipfooter is not None:
-            skip_footer = skipfooter
+        Parse specified sheet(s) into a DataFrame
+
+        Equivalent to read_excel(ExcelFile, ...)  See the read_excel
+        docstring for more info on accepted parameters
+        """
 
         return self._parse_excel(sheetname=sheetname, header=header,
                                  skiprows=skiprows,
@@ -240,10 +248,11 @@ class ExcelFile(object):
                                  parse_cols=parse_cols,
                                  parse_dates=parse_dates,
                                  date_parser=date_parser, na_values=na_values,
-                                 thousands=thousands, chunksize=chunksize,
+                                 thousands=thousands,
                                  skip_footer=skip_footer,
                                  convert_float=convert_float,
                                  converters=converters,
+                                 squeeze=squeeze,
                                  **kwds)
 
     def _should_parse(self, i, parse_cols):
@@ -282,8 +291,32 @@ class ExcelFile(object):
     def _parse_excel(self, sheetname=0, header=0, skiprows=None, skip_footer=0,
                      index_col=None, has_index_names=None, parse_cols=None,
                      parse_dates=False, date_parser=None, na_values=None,
-                     thousands=None, chunksize=None, convert_float=True,
-                     **kwds):
+                     thousands=None, convert_float=True,
+                     verbose=False, squeeze=False, **kwds):
+
+        skipfooter = kwds.pop('skipfooter', None)
+        if skipfooter is not None:
+            skip_footer = skipfooter
+
+        _validate_header_arg(header)
+        if has_index_names is not None:
+            warn("\nThe has_index_names argument is deprecated; index names "
+                 "will be automatically inferred based on index_col.\n"
+                 "This argmument is still necessary if reading Excel output "
+                 "from 0.16.2 or prior with index names.", FutureWarning,
+                 stacklevel=3)
+
+        if 'chunksize' in kwds:
+            raise NotImplementedError("chunksize keyword of read_excel "
+                                      "is not implemented")
+        if parse_dates:
+            raise NotImplementedError("parse_dates keyword of read_excel "
+                                      "is not implemented")
+
+        if date_parser is not None:
+            raise NotImplementedError("date_parser keyword of read_excel "
+                                      "is not implemented")
+
         import xlrd
         from xlrd import (xldate, XL_CELL_DATE,
                           XL_CELL_ERROR, XL_CELL_BOOLEAN,
@@ -291,81 +324,158 @@ class ExcelFile(object):
 
         epoch1904 = self.book.datemode
 
+        def _parse_cell(cell_contents, cell_typ):
+            """converts the contents of the cell into a pandas
+               appropriate object"""
+
+            if cell_typ == XL_CELL_DATE:
+                if xlrd_0_9_3:
+                    # Use the newer xlrd datetime handling.
+                    cell_contents = xldate.xldate_as_datetime(cell_contents,
+                                                              epoch1904)
+
+                    # Excel doesn't distinguish between dates and time,
+                    # so we treat dates on the epoch as times only.
+                    # Also, Excel supports 1900 and 1904 epochs.
+                    year = (cell_contents.timetuple())[0:3]
+                    if ((not epoch1904 and year == (1899, 12, 31)) or
+                            (epoch1904 and year == (1904, 1, 1))):
+                        cell_contents = time(cell_contents.hour,
+                                             cell_contents.minute,
+                                             cell_contents.second,
+                                             cell_contents.microsecond)
+                else:
+                    # Use the xlrd <= 0.9.2 date handling.
+                    dt = xldate.xldate_as_tuple(cell_contents, epoch1904)
+
+                    if dt[0] < MINYEAR:
+                        cell_contents = time(*dt[3:])
+                    else:
+                        cell_contents = datetime(*dt)
+
+            elif cell_typ == XL_CELL_ERROR:
+                cell_contents = np.nan
+            elif cell_typ == XL_CELL_BOOLEAN:
+                cell_contents = bool(cell_contents)
+            elif convert_float and cell_typ == XL_CELL_NUMBER:
+                # GH5394 - Excel 'numbers' are always floats
+                # it's a minimal perf hit and less suprising
+                val = int(cell_contents)
+                if val == cell_contents:
+                    cell_contents = val
+            return cell_contents
+
         # xlrd >= 0.9.3 can return datetime objects directly.
         if LooseVersion(xlrd.__VERSION__) >= LooseVersion("0.9.3"):
             xlrd_0_9_3 = True
         else:
             xlrd_0_9_3 = False
 
-        if isinstance(sheetname, compat.string_types):
-            sheet = self.book.sheet_by_name(sheetname)
-        else:  # assume an integer if not a string
-            sheet = self.book.sheet_by_index(sheetname)
+        ret_dict = False
 
-        data = []
-        should_parse = {}
-        for i in range(sheet.nrows):
-            row = []
-            for j, (value, typ) in enumerate(zip(sheet.row_values(i),
-                                                 sheet.row_types(i))):
-                if parse_cols is not None and j not in should_parse:
-                    should_parse[j] = self._should_parse(j, parse_cols)
+        # Keep sheetname to maintain backwards compatibility.
+        if isinstance(sheetname, list):
+            sheets = sheetname
+            ret_dict = True
+        elif sheetname is None:
+            sheets = self.sheet_names
+            ret_dict = True
+        else:
+            sheets = [sheetname]
 
-                if parse_cols is None or should_parse[j]:
-                    if typ == XL_CELL_DATE:
-                        if xlrd_0_9_3:
-                            # Use the newer xlrd datetime handling.
-                            value = xldate.xldate_as_datetime(value, epoch1904)
+        # handle same-type duplicates.
+        sheets = list(set(sheets))
 
-                            # Excel doesn't distinguish between dates and time,
-                            # so we treat dates on the epoch as times only.
-                            # Also, Excel supports 1900 and 1904 epochs.
-                            year = (value.timetuple())[0:3]
-                            if ((not epoch1904 and year == (1899, 12, 31))
-                                    or (epoch1904 and year == (1904, 1, 1))):
-                                value = datetime.time(value.hour,
-                                                      value.minute,
-                                                      value.second,
-                                                      value.microsecond)
+        output = {}
+
+        for asheetname in sheets:
+            if verbose:
+                print("Reading sheet %s" % asheetname)
+
+            if isinstance(asheetname, compat.string_types):
+                sheet = self.book.sheet_by_name(asheetname)
+            else:  # assume an integer if not a string
+                sheet = self.book.sheet_by_index(asheetname)
+
+            data = []
+            should_parse = {}
+
+            for i in range(sheet.nrows):
+                row = []
+                for j, (value, typ) in enumerate(zip(sheet.row_values(i),
+                                                     sheet.row_types(i))):
+                    if parse_cols is not None and j not in should_parse:
+                        should_parse[j] = self._should_parse(j, parse_cols)
+
+                    if parse_cols is None or should_parse[j]:
+                        row.append(_parse_cell(value, typ))
+                data.append(row)
+
+            if sheet.nrows == 0:
+                output[asheetname] = DataFrame()
+                continue
+
+            if com.is_list_like(header) and len(header) == 1:
+                header = header[0]
+
+            # forward fill and pull out names for MultiIndex column
+            header_names = None
+            if header is not None:
+                if com.is_list_like(header):
+                    header_names = []
+                    for row in header:
+                        if com.is_integer(skiprows):
+                            row += skiprows
+                        data[row] = _fill_mi_header(data[row])
+                        header_name, data[row] = _pop_header_name(
+                            data[row], index_col)
+                        header_names.append(header_name)
+                else:
+                    data[header] = _trim_excel_header(data[header])
+
+            if com.is_list_like(index_col):
+                # forward fill values for MultiIndex index
+                if not com.is_list_like(header):
+                    offset = 1 + header
+                else:
+                    offset = 1 + max(header)
+
+                for col in index_col:
+                    last = data[offset][col]
+                    for row in range(offset + 1, len(data)):
+                        if data[row][col] == '' or data[row][col] is None:
+                            data[row][col] = last
                         else:
-                            # Use the xlrd <= 0.9.2 date handling.
-                            dt = xldate.xldate_as_tuple(value, epoch1904)
+                            last = data[row][col]
 
-                            if dt[0] < datetime.MINYEAR:
-                                value = datetime.time(*dt[3:])
-                            else:
-                                value = datetime.datetime(*dt)
+            if com.is_list_like(header) and len(header) > 1:
+                has_index_names = True
 
-                    elif typ == XL_CELL_ERROR:
-                        value = np.nan
-                    elif typ == XL_CELL_BOOLEAN:
-                        value = bool(value)
-                    elif convert_float and typ == XL_CELL_NUMBER:
-                        # GH5394 - Excel 'numbers' are always floats
-                        # it's a minimal perf hit and less suprising
-                        val = int(value)
-                        if val == value:
-                            value = val
+            # GH 12292 : error when read one empty column from excel file
+            try:
+                parser = TextParser(data, header=header, index_col=index_col,
+                                    has_index_names=has_index_names,
+                                    na_values=na_values,
+                                    thousands=thousands,
+                                    parse_dates=parse_dates,
+                                    date_parser=date_parser,
+                                    skiprows=skiprows,
+                                    skip_footer=skip_footer,
+                                    squeeze=squeeze,
+                                    **kwds)
 
-                    row.append(value)
+                output[asheetname] = parser.read()
+                if not squeeze or isinstance(output[asheetname], DataFrame):
+                    output[asheetname].columns = output[
+                        asheetname].columns.set_names(header_names)
+            except EmptyDataError:
+                # No Data, return an empty DataFrame
+                output[asheetname] = DataFrame()
 
-            data.append(row)
-
-        if header is not None:
-            data[header] = _trim_excel_header(data[header])
-
-        parser = TextParser(data, header=header, index_col=index_col,
-                            has_index_names=has_index_names,
-                            na_values=na_values,
-                            thousands=thousands,
-                            parse_dates=parse_dates,
-                            date_parser=date_parser,
-                            skiprows=skiprows,
-                            skip_footer=skip_footer,
-                            chunksize=chunksize,
-                            **kwds)
-
-        return parser.read()
+        if ret_dict:
+            return output
+        else:
+            return output[asheetname]
 
     @property
     def sheet_names(self):
@@ -391,6 +501,33 @@ def _trim_excel_header(row):
     return row
 
 
+def _fill_mi_header(row):
+    # forward fill blanks entries
+    # from headers if parsing as MultiIndex
+    last = row[0]
+    for i in range(1, len(row)):
+        if row[i] == '' or row[i] is None:
+            row[i] = last
+        else:
+            last = row[i]
+    return row
+
+# fill blank if index_col not None
+
+
+def _pop_header_name(row, index_col):
+    """ (header, new_data) for header rows in MultiIndex parsing"""
+    none_fill = lambda x: None if x == '' else x
+
+    if index_col is None:
+        # no index col specified, trim data for inference path
+        return none_fill(row[0]), row[1:]
+    else:
+        # pop out header name and fill w/ blank
+        i = index_col if not com.is_list_like(index_col) else max(index_col)
+        return none_fill(row[i]), row[:i] + [''] + row[i + 1:]
+
+
 def _conv_value(val):
     # Convert numpy types to Python types for the Excel writers.
     if com.is_integer(val):
@@ -401,6 +538,8 @@ def _conv_value(val):
         val = bool(val)
     elif isinstance(val, Period):
         val = "%s" % val
+    elif com.is_list_like(val):
+        val = str(val)
 
     return val
 
@@ -424,6 +563,11 @@ class ExcelWriter(object):
     datetime_format : string, default None
         Format string for datetime objects written into Excel files
         (e.g. 'YYYY-MM-DD HH:MM:SS')
+
+    Notes
+    -----
+    For compatibility with CSV writers, ExcelWriter serializes lists
+    and dicts to strings before writing.
     """
     # Defining an ExcelWriter implementation (see abstract methods for more...)
 
@@ -448,9 +592,13 @@ class ExcelWriter(object):
     # ExcelWriter.
     def __new__(cls, path, engine=None, **kwargs):
         # only switch class if generic(ExcelWriter)
-        if cls == ExcelWriter:
+        if issubclass(cls, ExcelWriter):
             if engine is None:
-                ext = os.path.splitext(path)[-1][1:]
+                if isinstance(path, string_types):
+                    ext = os.path.splitext(path)[-1][1:]
+                else:
+                    ext = 'xlsx'
+
                 try:
                     engine = config.get_option('io.excel.%s.writer' % ext)
                 except KeyError:
@@ -501,7 +649,11 @@ class ExcelWriter(object):
     def __init__(self, path, engine=None,
                  date_format=None, datetime_format=None, **engine_kwargs):
         # validate that this engine can handle the extension
-        ext = os.path.splitext(path)[-1]
+        if isinstance(path, string_types):
+            ext = os.path.splitext(path)[-1]
+        else:
+            ext = 'xls' if engine == 'xlwt' else 'xlsx'
+
         self.check_extension(ext)
 
         self.path = path
@@ -593,7 +745,11 @@ class _Openpyxl1Writer(ExcelWriter):
         for cell in cells:
             colletter = get_column_letter(startcol + cell.col + 1)
             xcell = wks.cell("%s%s" % (colletter, startrow + cell.row + 1))
-            xcell.value = _conv_value(cell.val)
+            if (isinstance(cell.val, compat.string_types) and
+                    xcell.data_type_for_value(cell.val) != xcell.TYPE_STRING):
+                xcell.set_value_explicit(cell.val)
+            else:
+                xcell.value = _conv_value(cell.val)
             style = None
             if cell.style:
                 style = self._convert_to_style(cell.style)
@@ -601,9 +757,9 @@ class _Openpyxl1Writer(ExcelWriter):
                     xcell.style.__setattr__(field,
                                             style.__getattribute__(field))
 
-            if isinstance(cell.val, datetime.datetime):
+            if isinstance(cell.val, datetime):
                 xcell.style.number_format.format_code = self.datetime_format
-            elif isinstance(cell.val, datetime.date):
+            elif isinstance(cell.val, date):
                 xcell.style.number_format.format_code = self.date_format
 
             if cell.mergestart is not None and cell.mergeend is not None:
@@ -664,11 +820,11 @@ class _OpenpyxlWriter(_Openpyxl1Writer):
 register_writer(_OpenpyxlWriter)
 
 
-class _Openpyxl2Writer(_Openpyxl1Writer):
+class _Openpyxl20Writer(_Openpyxl1Writer):
     """
     Note: Support for OpenPyxl v2 is currently EXPERIMENTAL (GH7565).
     """
-    engine = 'openpyxl2'
+    engine = 'openpyxl20'
     openpyxl_majorver = 2
 
     def write_cells(self, cells, sheet_name=None, startrow=0, startcol=0):
@@ -691,12 +847,12 @@ class _Openpyxl2Writer(_Openpyxl1Writer):
             style_kwargs = {}
 
             # Apply format codes before cell.style to allow override
-            if isinstance(cell.val, datetime.datetime):
+            if isinstance(cell.val, datetime):
                 style_kwargs.update(self._convert_to_style_kwargs({
-                        'number_format':{'format_code': self.datetime_format}}))
-            elif isinstance(cell.val, datetime.date):
+                    'number_format': {'format_code': self.datetime_format}}))
+            elif isinstance(cell.val, date):
                 style_kwargs.update(self._convert_to_style_kwargs({
-                        'number_format':{'format_code': self.date_format}}))
+                    'number_format': {'format_code': self.date_format}}))
 
             if cell.style:
                 style_kwargs.update(self._convert_to_style_kwargs(cell.style))
@@ -762,13 +918,12 @@ class _Openpyxl2Writer(_Openpyxl1Writer):
             if k in _style_key_map:
                 k = _style_key_map[k]
             _conv_to_x = getattr(cls, '_convert_to_{0}'.format(k),
-                    lambda x: None)
+                                 lambda x: None)
             new_v = _conv_to_x(v)
             if new_v:
                 style_kwargs[k] = new_v
 
         return style_kwargs
-
 
     @classmethod
     def _convert_to_color(cls, color_spec):
@@ -797,7 +952,6 @@ class _Openpyxl2Writer(_Openpyxl1Writer):
             return Color(color_spec)
         else:
             return Color(**color_spec)
-
 
     @classmethod
     def _convert_to_font(cls, font_dict):
@@ -847,7 +1001,6 @@ class _Openpyxl2Writer(_Openpyxl1Writer):
 
         return Font(**font_kwargs)
 
-
     @classmethod
     def _convert_to_stop(cls, stop_seq):
         """
@@ -864,7 +1017,6 @@ class _Openpyxl2Writer(_Openpyxl1Writer):
         """
 
         return map(cls._convert_to_color, stop_seq)
-
 
     @classmethod
     def _convert_to_fill(cls, fill_dict):
@@ -930,7 +1082,6 @@ class _Openpyxl2Writer(_Openpyxl1Writer):
         except TypeError:
             return GradientFill(**gfill_kwargs)
 
-
     @classmethod
     def _convert_to_side(cls, side_spec):
         """
@@ -965,7 +1116,6 @@ class _Openpyxl2Writer(_Openpyxl1Writer):
             side_kwargs[k] = v
 
         return Side(**side_kwargs)
-
 
     @classmethod
     def _convert_to_border(cls, border_dict):
@@ -1010,7 +1160,6 @@ class _Openpyxl2Writer(_Openpyxl1Writer):
 
         return Border(**border_kwargs)
 
-
     @classmethod
     def _convert_to_alignment(cls, alignment_dict):
         """
@@ -1033,7 +1182,6 @@ class _Openpyxl2Writer(_Openpyxl1Writer):
         from openpyxl.styles import Alignment
 
         return Alignment(**alignment_dict)
-
 
     @classmethod
     def _convert_to_number_format(cls, number_format_dict):
@@ -1076,7 +1224,76 @@ class _Openpyxl2Writer(_Openpyxl1Writer):
         return Protection(**protection_dict)
 
 
-register_writer(_Openpyxl2Writer)
+register_writer(_Openpyxl20Writer)
+
+
+class _Openpyxl22Writer(_Openpyxl20Writer):
+    """
+    Note: Support for OpenPyxl v2.2 is currently EXPERIMENTAL (GH7565).
+    """
+    engine = 'openpyxl22'
+    openpyxl_majorver = 2
+
+    def write_cells(self, cells, sheet_name=None, startrow=0, startcol=0):
+        # Write the frame cells using openpyxl.
+        sheet_name = self._get_sheet_name(sheet_name)
+
+        _style_cache = {}
+
+        if sheet_name in self.sheets:
+            wks = self.sheets[sheet_name]
+        else:
+            wks = self.book.create_sheet()
+            wks.title = sheet_name
+            self.sheets[sheet_name] = wks
+
+        for cell in cells:
+            xcell = wks.cell(
+                row=startrow + cell.row + 1,
+                column=startcol + cell.col + 1
+            )
+            xcell.value = _conv_value(cell.val)
+
+            style_kwargs = {}
+            if cell.style:
+                key = str(cell.style)
+                style_kwargs = _style_cache.get(key)
+                if style_kwargs is None:
+                    style_kwargs = self._convert_to_style_kwargs(cell.style)
+                    _style_cache[key] = style_kwargs
+
+            if style_kwargs:
+                for k, v in style_kwargs.items():
+                    setattr(xcell, k, v)
+
+            if cell.mergestart is not None and cell.mergeend is not None:
+
+                wks.merge_cells(
+                    start_row=startrow + cell.row + 1,
+                    start_column=startcol + cell.col + 1,
+                    end_column=startcol + cell.mergeend + 1,
+                    end_row=startrow + cell.mergestart + 1
+                )
+
+                # When cells are merged only the top-left cell is preserved
+                # The behaviour of the other cells in a merged range is
+                # undefined
+                if style_kwargs:
+                    first_row = startrow + cell.row + 1
+                    last_row = startrow + cell.mergestart + 1
+                    first_col = startcol + cell.col + 1
+                    last_col = startcol + cell.mergeend + 1
+
+                    for row in range(first_row, last_row + 1):
+                        for col in range(first_col, last_col + 1):
+                            if row == first_row and col == first_col:
+                                # Ignore first cell. It is already handled.
+                                continue
+                            xcell = wks.cell(column=col, row=row)
+                            for k, v in style_kwargs.items():
+                                setattr(xcell, k, v)
+
+register_writer(_Openpyxl22Writer)
 
 
 class _XlwtWriter(ExcelWriter):
@@ -1086,7 +1303,7 @@ class _XlwtWriter(ExcelWriter):
     def __init__(self, path, engine=None, encoding=None, **engine_kwargs):
         # Use the xlwt module as the Excel writer.
         import xlwt
-
+        engine_kwargs['engine'] = engine
         super(_XlwtWriter, self).__init__(path, **engine_kwargs)
 
         if encoding is None:
@@ -1118,9 +1335,9 @@ class _XlwtWriter(ExcelWriter):
             val = _conv_value(cell.val)
 
             num_format_str = None
-            if isinstance(cell.val, datetime.datetime):
+            if isinstance(cell.val, datetime):
                 num_format_str = self.datetime_format
-            elif isinstance(cell.val, datetime.date):
+            elif isinstance(cell.val, date):
                 num_format_str = self.date_format
 
             stylekey = json.dumps(cell.style)
@@ -1238,10 +1455,12 @@ class _XlsxWriter(ExcelWriter):
         style_dict = {}
 
         for cell in cells:
+            val = _conv_value(cell.val)
+
             num_format_str = None
-            if isinstance(cell.val, datetime.datetime):
+            if isinstance(cell.val, datetime):
                 num_format_str = self.datetime_format
-            elif isinstance(cell.val, datetime.date):
+            elif isinstance(cell.val, date):
                 num_format_str = self.date_format
 
             stylekey = json.dumps(cell.style)
@@ -1263,7 +1482,7 @@ class _XlsxWriter(ExcelWriter):
             else:
                 wks.write(startrow + cell.row,
                           startcol + cell.col,
-                          cell.val, style)
+                          val, style)
 
     def _convert_to_style(self, style_dict, num_format_str=None):
         """
@@ -1273,6 +1492,10 @@ class _XlsxWriter(ExcelWriter):
         style_dict: style dictionary to convert
         num_format_str: optional number format string
         """
+
+        # If there is no formatting we don't create a format object.
+        if num_format_str is None and style_dict is None:
+            return None
 
         # Create a XlsxWriter format object.
         xl_format = self.book.add_format()
@@ -1292,11 +1515,11 @@ class _XlsxWriter(ExcelWriter):
         # Map the alignment to XlsxWriter alignment properties.
         alignment = style_dict.get('alignment')
         if alignment:
-            if (alignment.get('horizontal')
-                    and alignment['horizontal'] == 'center'):
+            if (alignment.get('horizontal') and
+                    alignment['horizontal'] == 'center'):
                 xl_format.set_align('center')
-            if (alignment.get('vertical')
-                    and alignment['vertical'] == 'top'):
+            if (alignment.get('vertical') and
+                    alignment['vertical'] == 'top'):
                 xl_format.set_align('top')
 
         # Map the cell borders to XlsxWriter border properties.

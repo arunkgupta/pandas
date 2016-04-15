@@ -1,10 +1,12 @@
-from datetime import datetime
+from datetime import timedelta
 from pandas.compat import range, long, zip
 from pandas import compat
 import re
+import warnings
 
 import numpy as np
 
+import pandas.core.algorithms as algos
 from pandas.core.algorithms import unique
 from pandas.tseries.offsets import DateOffset
 from pandas.util.decorators import cache_readonly
@@ -12,6 +14,10 @@ import pandas.tseries.offsets as offsets
 import pandas.core.common as com
 import pandas.lib as lib
 import pandas.tslib as tslib
+import pandas._period as period
+from pandas.tslib import Timedelta
+from pytz import AmbiguousTimeError
+
 
 class FreqGroup(object):
     FR_ANN = 1000
@@ -30,63 +36,140 @@ class FreqGroup(object):
 
 class Resolution(object):
 
-    RESO_US = tslib.US_RESO
-    RESO_MS = tslib.MS_RESO
-    RESO_SEC = tslib.S_RESO
-    RESO_MIN = tslib.T_RESO
-    RESO_HR = tslib.H_RESO
-    RESO_DAY = tslib.D_RESO
+    # defined in period.pyx
+    # note that these are different from freq codes
+    RESO_US = period.US_RESO
+    RESO_MS = period.MS_RESO
+    RESO_SEC = period.S_RESO
+    RESO_MIN = period.T_RESO
+    RESO_HR = period.H_RESO
+    RESO_DAY = period.D_RESO
 
     _reso_str_map = {
-    RESO_US: 'microsecond',
-    RESO_MS: 'millisecond',
-    RESO_SEC: 'second',
-    RESO_MIN: 'minute',
-    RESO_HR: 'hour',
-    RESO_DAY: 'day'}
+        RESO_US: 'microsecond',
+        RESO_MS: 'millisecond',
+        RESO_SEC: 'second',
+        RESO_MIN: 'minute',
+        RESO_HR: 'hour',
+        RESO_DAY: 'day'}
 
     _str_reso_map = dict([(v, k) for k, v in compat.iteritems(_reso_str_map)])
 
     _reso_freq_map = {
-    'year': 'A',
-    'quarter': 'Q',
-    'month': 'M',
-    'day': 'D',
-    'hour': 'H',
-    'minute': 'T',
-    'second': 'S',
-    'millisecond': 'L',
-    'microsecond': 'U',
-    'nanosecond': 'N'}
+        'year': 'A',
+        'quarter': 'Q',
+        'month': 'M',
+        'day': 'D',
+        'hour': 'H',
+        'minute': 'T',
+        'second': 'S',
+        'millisecond': 'L',
+        'microsecond': 'U',
+        'nanosecond': 'N'}
 
-    _freq_reso_map = dict([(v, k) for k, v in compat.iteritems(_reso_freq_map)])
+    _freq_reso_map = dict([(v, k)
+                           for k, v in compat.iteritems(_reso_freq_map)])
 
     @classmethod
     def get_str(cls, reso):
+        """
+        Return resolution str against resolution code.
+
+        Example
+        -------
+        >>> Resolution.get_str(Resolution.RESO_SEC)
+        'second'
+        """
         return cls._reso_str_map.get(reso, 'day')
 
     @classmethod
     def get_reso(cls, resostr):
+        """
+        Return resolution str against resolution code.
+
+        Example
+        -------
+        >>> Resolution.get_reso('second')
+        2
+
+        >>> Resolution.get_reso('second') == Resolution.RESO_SEC
+        True
+        """
         return cls._str_reso_map.get(resostr, cls.RESO_DAY)
 
     @classmethod
+    def get_freq_group(cls, resostr):
+        """
+        Return frequency str against resolution str.
+
+        Example
+        -------
+        >>> f.Resolution.get_freq_group('day')
+        4000
+        """
+        return get_freq_group(cls.get_freq(resostr))
+
+    @classmethod
     def get_freq(cls, resostr):
+        """
+        Return frequency str against resolution str.
+
+        Example
+        -------
+        >>> f.Resolution.get_freq('day')
+        'D'
+        """
         return cls._reso_freq_map[resostr]
 
     @classmethod
     def get_str_from_freq(cls, freq):
+        """
+        Return resolution str against frequency str.
+
+        Example
+        -------
+        >>> Resolution.get_str_from_freq('H')
+        'hour'
+        """
         return cls._freq_reso_map.get(freq, 'day')
 
     @classmethod
     def get_reso_from_freq(cls, freq):
+        """
+        Return resolution code against frequency str.
+
+        Example
+        -------
+        >>> Resolution.get_reso_from_freq('H')
+        4
+
+        >>> Resolution.get_reso_from_freq('H') == Resolution.RESO_HR
+        True
+        """
         return cls.get_reso(cls.get_str_from_freq(freq))
 
 
-def get_reso_string(reso):
-    return Resolution.get_str(reso)
-
-
 def get_to_timestamp_base(base):
+    """
+    Return frequency code group used for base of to_timestamp against
+    frequency code.
+
+    Example
+    -------
+    # Return day freq code against longer freq than day
+    >>> get_to_timestamp_base(get_freq_code('D')[0])
+    6000
+    >>> get_to_timestamp_base(get_freq_code('W')[0])
+    6000
+    >>> get_to_timestamp_base(get_freq_code('M')[0])
+    6000
+
+    # Return second freq code against hour between second
+    >>> get_to_timestamp_base(get_freq_code('H')[0])
+    9000
+    >>> get_to_timestamp_base(get_freq_code('S')[0])
+    9000
+    """
     if base < FreqGroup.FR_BUS:
         return FreqGroup.FR_DAY
     if FreqGroup.FR_HR <= base <= FreqGroup.FR_SEC:
@@ -95,13 +178,43 @@ def get_to_timestamp_base(base):
 
 
 def get_freq_group(freq):
+    """
+    Return frequency code group of given frequency str or offset.
+
+    Example
+    -------
+    >>> get_freq_group('W-MON')
+    4000
+
+    >>> get_freq_group('W-FRI')
+    4000
+    """
+    if isinstance(freq, offsets.DateOffset):
+        freq = freq.rule_code
+
     if isinstance(freq, compat.string_types):
         base, mult = get_freq_code(freq)
         freq = base
+    elif isinstance(freq, int):
+        pass
+    else:
+        raise ValueError('input must be str, offset or int')
     return (freq // 1000) * 1000
 
 
 def get_freq(freq):
+    """
+    Return frequency code of given frequency str.
+    If input is not string, return input as it is.
+
+    Example
+    -------
+    >>> get_freq('A')
+    1000
+
+    >>> get_freq('3A')
+    1000
+    """
     if isinstance(freq, compat.string_types):
         base, mult = get_freq_code(freq)
         freq = base
@@ -110,15 +223,29 @@ def get_freq(freq):
 
 def get_freq_code(freqstr):
     """
+    Return freq str or tuple to freq code and stride (mult)
 
     Parameters
     ----------
+    freqstr : str or tuple
 
     Returns
     -------
+    return : tuple of base frequency code and stride (mult)
+
+    Example
+    -------
+    >>> get_freq_code('3D')
+    (6000, 3)
+
+    >>> get_freq_code('D')
+    (6000, 1)
+
+    >>> get_freq_code(('D', 3))
+    (6000, 3)
     """
     if isinstance(freqstr, DateOffset):
-        freqstr = (get_offset_name(freqstr), freqstr.n)
+        freqstr = (freqstr.rule_code, freqstr.n)
 
     if isinstance(freqstr, tuple):
         if (com.is_integer(freqstr[0]) and
@@ -153,17 +280,17 @@ def _get_freq_str(base, mult=1):
     return str(mult) + code
 
 
-#----------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # Offset names ("time rules") and related functions
 
 
-from pandas.tseries.offsets import (Nano, Micro, Milli, Second, Minute, Hour,
+from pandas.tseries.offsets import (Nano, Micro, Milli, Second,  # noqa
+                                    Minute, Hour,
                                     Day, BDay, CDay, Week, MonthBegin,
                                     MonthEnd, BMonthBegin, BMonthEnd,
                                     QuarterBegin, QuarterEnd, BQuarterBegin,
                                     BQuarterEnd, YearBegin, YearEnd,
-                                    BYearBegin, BYearEnd, _make_offset
-                                    )
+                                    BYearBegin, BYearEnd, prefix_mapping)
 try:
     cday = CDay()
 except NotImplementedError:
@@ -199,14 +326,12 @@ _offset_to_period_map = {
 }
 
 need_suffix = ['QS', 'BQ', 'BQS', 'AS', 'BA', 'BAS']
-_months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP',
-           'OCT', 'NOV', 'DEC']
 for __prefix in need_suffix:
-    for _m in _months:
+    for _m in tslib._MONTHS:
         _offset_to_period_map['%s-%s' % (__prefix, _m)] = \
             _offset_to_period_map[__prefix]
 for __prefix in ['A', 'Q']:
-    for _m in _months:
+    for _m in tslib._MONTHS:
         _alias = '%s-%s' % (__prefix, _m)
         _offset_to_period_map[_alias] = _alias
 
@@ -222,10 +347,8 @@ def get_period_alias(offset_str):
 _rule_aliases = {
     # Legacy rules that will continue to map to their original values
     # essentially for the rest of time
-
     'WEEKDAY': 'B',
     'EOM': 'BM',
-
     'W@MON': 'W-MON',
     'W@TUE': 'W-TUE',
     'W@WED': 'W-WED',
@@ -233,18 +356,9 @@ _rule_aliases = {
     'W@FRI': 'W-FRI',
     'W@SAT': 'W-SAT',
     'W@SUN': 'W-SUN',
-    'W': 'W-SUN',
-
     'Q@JAN': 'BQ-JAN',
     'Q@FEB': 'BQ-FEB',
     'Q@MAR': 'BQ-MAR',
-    'Q': 'Q-DEC',
-
-    'A': 'A-DEC',  # YearEnd(month=12),
-    'AS': 'AS-JAN',  # YearBegin(month=1),
-    'BA': 'BA-DEC',  # BYearEnd(month=12),
-    'BAS': 'BAS-JAN',  # BYearBegin(month=1),
-
     'A@JAN': 'BA-JAN',
     'A@FEB': 'BA-FEB',
     'A@MAR': 'BA-MAR',
@@ -257,15 +371,25 @@ _rule_aliases = {
     'A@OCT': 'BA-OCT',
     'A@NOV': 'BA-NOV',
     'A@DEC': 'BA-DEC',
+}
 
-    # lite aliases
+_lite_rule_alias = {
+    'W': 'W-SUN',
+    'Q': 'Q-DEC',
+
+    'A': 'A-DEC',  # YearEnd(month=12),
+    'AS': 'AS-JAN',  # YearBegin(month=1),
+    'BA': 'BA-DEC',  # BYearEnd(month=12),
+    'BAS': 'BAS-JAN',  # BYearBegin(month=1),
+
     'Min': 'T',
     'min': 'T',
     'ms': 'L',
-    'us': 'U'
+    'us': 'U',
+    'ns': 'N'
 }
 
-#TODO: Can this be killed?
+# TODO: Can this be killed?
 for _i, _weekday in enumerate(['MON', 'TUE', 'WED', 'THU', 'FRI']):
     for _iweek in range(4):
         _name = 'WOM-%d%s' % (_iweek + 1, _weekday)
@@ -273,12 +397,23 @@ for _i, _weekday in enumerate(['MON', 'TUE', 'WED', 'THU', 'FRI']):
 
 # Note that _rule_aliases is not 1:1 (d[BA]==d[A@DEC]), and so traversal
 # order matters when constructing an inverse. we pick one. #2331
+# Used in get_legacy_offset_name
 _legacy_reverse_map = dict((v, k) for k, v in
                            reversed(sorted(compat.iteritems(_rule_aliases))))
 
+_name_to_offset_map = {'days': Day(1),
+                       'hours': Hour(1),
+                       'minutes': Minute(1),
+                       'seconds': Second(1),
+                       'milliseconds': Milli(1),
+                       'microseconds': Micro(1),
+                       'nanoseconds': Nano(1)}
+
+
 def to_offset(freqstr):
     """
-    Return DateOffset object from string representation
+    Return DateOffset object from string representation or
+    Timedelta object
 
     Examples
     --------
@@ -298,6 +433,23 @@ def to_offset(freqstr):
             name, stride = stride, name
         name, _ = _base_and_stride(name)
         delta = get_offset(name) * stride
+
+    elif isinstance(freqstr, timedelta):
+        delta = None
+        freqstr = Timedelta(freqstr)
+        try:
+            for name in freqstr.components._fields:
+                offset = _name_to_offset_map[name]
+                stride = getattr(freqstr.components, name)
+                if stride != 0:
+                    offset = stride * offset
+                    if delta is None:
+                        delta = offset
+                    else:
+                        delta = delta + offset
+        except Exception:
+            raise ValueError("Could not evaluate %s" % freqstr)
+
     else:
         delta = None
         stride_sign = None
@@ -358,7 +510,11 @@ def get_base_alias(freqstr):
     """
     return _base_and_stride(freqstr)[0]
 
+
 _dont_uppercase = set(('MS', 'ms'))
+
+
+_LEGACY_FREQ_WARNING = 'Freq "{0}" is deprecated, use "{1}" as alternative.'
 
 
 def get_offset(name):
@@ -373,22 +529,41 @@ def get_offset(name):
         name = name.upper()
 
         if name in _rule_aliases:
-            name = _rule_aliases[name]
+            new = _rule_aliases[name]
+            warnings.warn(_LEGACY_FREQ_WARNING.format(name, new),
+                          FutureWarning, stacklevel=2)
+            name = new
         elif name.lower() in _rule_aliases:
-            name = _rule_aliases[name.lower()]
+            new = _rule_aliases[name.lower()]
+            warnings.warn(_LEGACY_FREQ_WARNING.format(name, new),
+                          FutureWarning, stacklevel=2)
+            name = new
+
+        name = _lite_rule_alias.get(name, name)
+        name = _lite_rule_alias.get(name.lower(), name)
+
     else:
         if name in _rule_aliases:
-            name = _rule_aliases[name]
+            new = _rule_aliases[name]
+            warnings.warn(_LEGACY_FREQ_WARNING.format(name, new),
+                          FutureWarning, stacklevel=2)
+            name = new
+        name = _lite_rule_alias.get(name, name)
 
     if name not in _offset_map:
         try:
-            # generate and cache offset
-            offset = _make_offset(name)
+            split = name.split('-')
+            klass = prefix_mapping[split[0]]
+            # handles case where there's no suffix (and will TypeError if too
+            # many '-')
+            offset = klass._from_name(*split[1:])
         except (ValueError, TypeError, KeyError):
             # bad prefix or suffix
             raise ValueError('Bad rule name requested: %s.' % name)
+        # cache
         _offset_map[name] = offset
-    return _offset_map[name]
+    # do not return cache because it's mutable
+    return _offset_map[name].copy()
 
 
 getOffset = get_offset
@@ -402,27 +577,22 @@ def get_offset_name(offset):
     --------
     get_offset_name(BMonthEnd(1)) --> 'EOM'
     """
-    if offset is None:
-        raise ValueError("Offset can't be none!")
-    # Hack because this is what it did before...
-    if isinstance(offset, BDay):
-        if offset.n != 1:
-            raise ValueError('Bad rule given: %s.' % 'BusinessDays')
-        else:
-            return offset.rule_code
-    try:
-        return offset.freqstr
-    except AttributeError:
-        # Bad offset, give useful error.
-        raise ValueError('Bad rule given: %s.' % offset)
+
+    msg = "get_offset_name(offset) is deprecated. Use offset.freqstr instead"
+    warnings.warn(msg, FutureWarning, stacklevel=2)
+    return offset.freqstr
 
 
 def get_legacy_offset_name(offset):
     """
     Return the pre pandas 0.8.0 name for the date offset
     """
+
+    # This only used in test_timeseries_legacy.py
+
     name = offset.name
     return _legacy_reverse_map.get(name, name)
+
 
 def get_standard_freq(freq):
     """
@@ -432,12 +602,12 @@ def get_standard_freq(freq):
         return None
 
     if isinstance(freq, DateOffset):
-        return get_offset_name(freq)
+        return freq.rule_code
 
     code, stride = get_freq_code(freq)
     return _get_freq_str(code, stride)
 
-#----------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # Period codes
 
 # period frequency constants corresponding to scikits timeseries
@@ -502,6 +672,7 @@ _period_code_map.update({
     "Q": 2000,  # Quarterly - December year end (default quarterly)
     "A": 1000,  # Annual
     "W": 4000,  # Weekly
+    "C": 5000,  # Custom Business Day
 })
 
 
@@ -513,7 +684,7 @@ def _period_alias_dictionary():
     alias_dict = {}
 
     M_aliases = ["M", "MTH", "MONTH", "MONTHLY"]
-    B_aliases = ["B", "BUS", "BUSINESS", "BUSINESSLY", 'WEEKDAY']
+    B_aliases = ["B", "BUS", "BUSINESS", "BUSINESSLY", "WEEKDAY"]
     D_aliases = ["D", "DAY", "DLY", "DAILY"]
     H_aliases = ["H", "HR", "HOUR", "HRLY", "HOURLY"]
     T_aliases = ["T", "MIN", "MINUTE", "MINUTELY"]
@@ -535,7 +706,7 @@ def _period_alias_dictionary():
         alias_dict[k] = 'H'
 
     for k in T_aliases:
-        alias_dict[k] = 'Min'
+        alias_dict[k] = 'T'
 
     for k in S_aliases:
         alias_dict[k] = 'S'
@@ -609,23 +780,26 @@ def _period_alias_dictionary():
     return alias_dict
 
 
-def _infer_period_group(freqstr):
-    return _period_group(Resolution._reso_freq_map[freqstr])
-
-
-def _period_group(freqstr):
-    base, mult = get_freq_code(freqstr)
-    return base // 1000 * 1000
-
 _period_alias_dict = _period_alias_dictionary()
 
 
 def _period_str_to_code(freqstr):
     # hack
-    freqstr = _rule_aliases.get(freqstr, freqstr)
+    if freqstr in _rule_aliases:
+        new = _rule_aliases[freqstr]
+        warnings.warn(_LEGACY_FREQ_WARNING.format(freqstr, new),
+                      FutureWarning, stacklevel=3)
+        freqstr = new
+    freqstr = _lite_rule_alias.get(freqstr, freqstr)
 
     if freqstr not in _dont_uppercase:
-        freqstr = _rule_aliases.get(freqstr.lower(), freqstr)
+        lower = freqstr.lower()
+        if lower in _rule_aliases:
+            new = _rule_aliases[lower]
+            warnings.warn(_LEGACY_FREQ_WARNING.format(lower, new),
+                          FutureWarning, stacklevel=3)
+            freqstr = new
+        freqstr = _lite_rule_alias.get(lower, freqstr)
 
     try:
         if freqstr not in _dont_uppercase:
@@ -634,6 +808,8 @@ def _period_str_to_code(freqstr):
     except KeyError:
         try:
             alias = _period_alias_dict[freqstr]
+            warnings.warn(_LEGACY_FREQ_WARNING.format(freqstr, alias),
+                          FutureWarning, stacklevel=3)
         except KeyError:
             raise ValueError("Unknown freqstr: %s" % freqstr)
 
@@ -643,12 +819,12 @@ def _period_str_to_code(freqstr):
 def infer_freq(index, warn=True):
     """
     Infer the most likely frequency given the input index. If the frequency is
-    uncertain, a warning will be printed
+    uncertain, a warning will be printed.
 
     Parameters
     ----------
-    index : DatetimeIndex
-            if passed a Series will use the values of the series (NOT THE INDEX)
+    index : DatetimeIndex or TimedeltaIndex
+      if passed a Series will use the values of the series (NOT THE INDEX)
     warn : boolean, default True
 
     Returns
@@ -656,13 +832,17 @@ def infer_freq(index, warn=True):
     freq : string or None
         None if no discernible frequency
         TypeError if the index is not datetime-like
+        ValueError if there are less than three values.
     """
     import pandas as pd
 
     if isinstance(index, com.ABCSeries):
-        values = index.values
-        if not (com.is_datetime64_dtype(index.values) or com.is_timedelta64_dtype(index.values) or values.dtype == object):
-            raise TypeError("cannot infer freq from a non-convertible dtype on a Series of {0}".format(index.dtype))
+        values = index._values
+        if not (com.is_datetime64_dtype(values) or
+                com.is_timedelta64_dtype(values) or
+                values.dtype == object):
+            raise TypeError("cannot infer freq from a non-convertible "
+                            "dtype on a Series of {0}".format(index.dtype))
         index = values
 
     if com.is_period_arraylike(index):
@@ -674,10 +854,16 @@ def infer_freq(index, warn=True):
 
     if isinstance(index, pd.Index) and not isinstance(index, pd.DatetimeIndex):
         if isinstance(index, (pd.Int64Index, pd.Float64Index)):
-            raise TypeError("cannot infer freq from a non-convertible index type {0}".format(type(index)))
+            raise TypeError("cannot infer freq from a non-convertible index "
+                            "type {0}".format(type(index)))
         index = index.values
 
-    index = pd.DatetimeIndex(index)
+    if not isinstance(index, pd.DatetimeIndex):
+        try:
+            index = pd.DatetimeIndex(index)
+        except AmbiguousTimeError:
+            index = pd.DatetimeIndex(index.asi8)
+
     inferer = _FrequencyInferer(index, warn=warn)
     return inferer.get_freq()
 
@@ -700,7 +886,7 @@ class _FrequencyInferer(object):
 
         # This moves the values, which are implicitly in UTC, to the
         # the timezone so they are in local time
-        if hasattr(index,'tz'):
+        if hasattr(index, 'tz'):
             if index.tz is not None:
                 self.values = tslib.tz_convert(self.values, 'UTC', index.tz)
 
@@ -709,12 +895,13 @@ class _FrequencyInferer(object):
         if len(index) < 3:
             raise ValueError('Need at least 3 dates to infer frequency')
 
-        self.is_monotonic = self.index.is_monotonic
+        self.is_monotonic = (self.index.is_monotonic_increasing or
+                             self.index.is_monotonic_decreasing)
 
     @cache_readonly
     def deltas(self):
         return tslib.unique_deltas(self.values)
-    
+
     @cache_readonly
     def deltas_asi8(self):
         return tslib.unique_deltas(self.index.asi8)
@@ -722,7 +909,7 @@ class _FrequencyInferer(object):
     @cache_readonly
     def is_unique(self):
         return len(self.deltas) == 1
-    
+
     @cache_readonly
     def is_unique_asi8(self):
         return len(self.deltas_asi8) == 1
@@ -735,10 +922,13 @@ class _FrequencyInferer(object):
         if _is_multiple(delta, _ONE_DAY):
             return self._infer_daily_rule()
         else:
-            # Possibly intraday frequency.  Here we use the 
+            # Business hourly, maybe. 17: one day / 65: one weekend
+            if self.hour_deltas in ([1, 17], [1, 65], [1, 17, 65]):
+                return 'BH'
+            # Possibly intraday frequency.  Here we use the
             # original .asi8 values as the modified values
             # will not work around DST transitions.  See #8772
-            if not self.is_unique_asi8:
+            elif not self.is_unique_asi8:
                 return None
             delta = self.deltas_asi8[0]
             if _is_multiple(delta, _ONE_HOUR):
@@ -765,6 +955,10 @@ class _FrequencyInferer(object):
         return [x / _ONE_DAY for x in self.deltas]
 
     @cache_readonly
+    def hour_deltas(self):
+        return [x / _ONE_HOUR for x in self.deltas]
+
+    @cache_readonly
     def fields(self):
         return tslib.build_field_sarray(self.values)
 
@@ -786,7 +980,6 @@ class _FrequencyInferer(object):
 
         from calendar import monthrange
         for y, m, d, wd in zip(years, months, days, weekdays):
-            wd = datetime(y, m, d).weekday()
 
             if calendar_start:
                 calendar_start &= d == 1
@@ -840,7 +1033,7 @@ class _FrequencyInferer(object):
 
         monthly_rule = self._get_monthly_rule()
         if monthly_rule:
-            return monthly_rule
+            return _maybe_add_count(monthly_rule, self.mdiffs[0])
 
         if self.is_unique:
             days = self.deltas[0] / _ONE_DAY
@@ -889,17 +1082,19 @@ class _FrequencyInferer(object):
                 'ce': 'M', 'be': 'BM'}.get(pos_check)
 
     def _get_wom_rule(self):
-#         wdiffs = unique(np.diff(self.index.week))
-        #We also need -47, -49, -48 to catch index spanning year boundary
-#         if not lib.ismember(wdiffs, set([4, 5, -47, -49, -48])).all():
-#             return None
+        #         wdiffs = unique(np.diff(self.index.week))
+        # We also need -47, -49, -48 to catch index spanning year boundary
+        #     if not lib.ismember(wdiffs, set([4, 5, -47, -49, -48])).all():
+        #         return None
 
         weekdays = unique(self.index.weekday)
         if len(weekdays) > 1:
             return None
 
         week_of_months = unique((self.index.day - 1) // 7)
-        if len(week_of_months) > 1:
+        # Only attempt to infer up to WOM-4. See #9425
+        week_of_months = week_of_months[week_of_months < 4]
+        if len(week_of_months) == 0 or len(week_of_months) > 1:
             return None
 
         # get which week
@@ -908,7 +1103,6 @@ class _FrequencyInferer(object):
 
         return 'WOM-%d%s' % (week, wd)
 
-import pandas.core.algorithms as algos
 
 class _TimedeltaFrequencyInferer(_FrequencyInferer):
 
@@ -924,7 +1118,7 @@ class _TimedeltaFrequencyInferer(_FrequencyInferer):
 
 
 def _maybe_add_count(base, count):
-    if count > 1:
+    if count != 1:
         return '%d%s' % (count, base)
     else:
         return base
@@ -961,7 +1155,7 @@ def is_subperiod(source, target):
         return source in ['D', 'C', 'B', 'M', 'H', 'T', 'S', 'L', 'U', 'N']
     elif _is_quarterly(target):
         return source in ['D', 'C', 'B', 'M', 'H', 'T', 'S', 'L', 'U', 'N']
-    elif target == 'M':
+    elif _is_monthly(target):
         return source in ['D', 'C', 'B', 'H', 'T', 'S', 'L', 'U', 'N']
     elif _is_weekly(target):
         return source in [target, 'D', 'C', 'B', 'H', 'T', 'S', 'L', 'U', 'N']
@@ -1020,7 +1214,7 @@ def is_superperiod(source, target):
         return target in ['D', 'C', 'B', 'M', 'H', 'T', 'S', 'L', 'U', 'N']
     elif _is_quarterly(source):
         return target in ['D', 'C', 'B', 'M', 'H', 'T', 'S', 'L', 'U', 'N']
-    elif source == 'M':
+    elif _is_monthly(source):
         return target in ['D', 'C', 'B', 'H', 'T', 'S', 'L', 'U', 'N']
     elif _is_weekly(source):
         return target in [source, 'D', 'C', 'B', 'H', 'T', 'S', 'L', 'U', 'N']
@@ -1044,12 +1238,7 @@ def is_superperiod(source, target):
         return target in ['N']
 
 
-def _get_rule_month(source, default='DEC'):
-    source = source.upper()
-    if '-' not in source:
-        return default
-    else:
-        return source.split('-')[1]
+_get_rule_month = tslib._get_rule_month
 
 
 def _is_annual(rule):
@@ -1065,7 +1254,12 @@ def _quarter_months_conform(source, target):
 
 def _is_quarterly(rule):
     rule = rule.upper()
-    return rule == 'Q' or rule.startswith('Q-')
+    return rule == 'Q' or rule.startswith('Q-') or rule.startswith('BQ')
+
+
+def _is_monthly(rule):
+    rule = rule.upper()
+    return rule == 'M' or rule == 'BM'
 
 
 def _is_weekly(rule):
@@ -1075,14 +1269,10 @@ def _is_weekly(rule):
 
 DAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN']
 
-MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL',
-          'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
-
-_month_numbers = dict((k, i) for i, k in enumerate(MONTHS))
-
-
+MONTHS = tslib._MONTHS
+_month_numbers = tslib._MONTH_NUMBERS
+_month_aliases = tslib._MONTH_ALIASES
 _weekday_rule_aliases = dict((k, v) for k, v in enumerate(DAYS))
-_month_aliases = dict((k + 1, v) for k, v in enumerate(MONTHS))
 
 
 def _is_multiple(us, mult):

@@ -11,11 +11,13 @@ from pandas.compat import long, u
 from pandas import compat, isnull
 from pandas import Series, DataFrame, to_datetime
 from pandas.io.common import get_filepath_or_buffer
-import pandas.core.common as com
+from pandas.core.common import AbstractMethodError
+from pandas.formats.printing import pprint_thing
 
 loads = _json.loads
 dumps = _json.dumps
-### interface to/from ###
+
+# interface to/from
 
 
 def to_json(path_or_buf, obj, orient=None, date_format='epoch',
@@ -33,7 +35,7 @@ def to_json(path_or_buf, obj, orient=None, date_format='epoch',
             double_precision=double_precision, ensure_ascii=force_ascii,
             date_unit=date_unit, default_handler=default_handler).write()
     else:
-        raise NotImplementedError
+        raise NotImplementedError("'obj' should be a Series or a DataFrame")
 
     if isinstance(path_or_buf, compat.string_types):
         with open(path_or_buf, 'w') as fh:
@@ -64,7 +66,7 @@ class Writer(object):
         self._format_axes()
 
     def _format_axes(self):
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
     def write(self):
         return dumps(
@@ -109,7 +111,7 @@ def read_json(path_or_buf=None, orient=None, typ='frame', dtype=True,
 
     Parameters
     ----------
-    filepath_or_buffer : a valid JSON string or file-like
+    path_or_buf : a valid JSON string or file-like, default: None
         The string could be a URL. Valid URL schemes include http, ftp, s3, and
         file. For file URLs, a host is expected. For instance, a local file
         could be ``file://localhost/path/to/table.json``
@@ -149,14 +151,25 @@ def read_json(path_or_buf=None, orient=None, typ='frame', dtype=True,
         Try to convert the axes to the proper dtypes.
     convert_dates : boolean, default True
         List of columns to parse for dates; If True, then try to parse
-        datelike columns default is True
-    keep_default_dates : boolean, default True.
+        datelike columns default is True; a column label is datelike if
+
+        * it ends with ``'_at'``,
+
+        * it ends with ``'_time'``,
+
+        * it begins with ``'timestamp'``,
+
+        * it is ``'modified'``, or
+
+        * it is ``'date'``
+
+    keep_default_dates : boolean, default True
         If parsing dates, then parse the default datelike columns
     numpy : boolean, default False
         Direct decoding to numpy arrays. Supports numeric data only, but
         non-numeric column and index labels are supported. Note also that the
         JSON ordering MUST be the same for each term if numpy=True.
-    precise_float : boolean, default False.
+    precise_float : boolean, default False
         Set to enable usage of higher precision (strtod) function when
         decoding string to double values. Default (False) is to use fast but
         less precise builtin functionality
@@ -171,14 +184,14 @@ def read_json(path_or_buf=None, orient=None, typ='frame', dtype=True,
     result : Series or DataFrame
     """
 
-    filepath_or_buffer, _ = get_filepath_or_buffer(path_or_buf)
+    filepath_or_buffer, _, _ = get_filepath_or_buffer(path_or_buf)
     if isinstance(filepath_or_buffer, compat.string_types):
         try:
             exists = os.path.exists(filepath_or_buffer)
 
         # if the filepath is too long will raise here
         # 5874
-        except (TypeError,ValueError):
+        except (TypeError, ValueError):
             exists = False
 
         if exists:
@@ -253,7 +266,7 @@ class Parser(object):
         if bad_keys:
             bad_keys = ", ".join(bad_keys)
             raise ValueError(u("JSON data had unexpected key(s): %s") %
-                             com.pprint_thing(bad_keys))
+                             pprint_thing(bad_keys))
 
     def parse(self):
 
@@ -282,7 +295,7 @@ class Parser(object):
                 setattr(self.obj, axis, new_axis)
 
     def _try_convert_types(self):
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
     def _try_convert_data(self, name, data, use_dtypes=True,
                           convert_dates=True):
@@ -395,7 +408,7 @@ class Parser(object):
         return data, False
 
     def _try_convert_dates(self):
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
 
 class SeriesParser(Parser):
@@ -542,22 +555,24 @@ class FrameParser(Parser):
             if not isinstance(col, compat.string_types):
                 return False
 
-            if (col.endswith('_at') or
-                    col.endswith('_time') or
-                    col.lower() == 'modified' or
-                    col.lower() == 'date' or
-                    col.lower() == 'datetime'):
+            col_lower = col.lower()
+            if (col_lower.endswith('_at') or
+                    col_lower.endswith('_time') or
+                    col_lower == 'modified' or
+                    col_lower == 'date' or
+                    col_lower == 'datetime' or
+                    col_lower.startswith('timestamp')):
                 return True
             return False
 
         self._process_converter(
             lambda col, c: self._try_convert_to_date(c),
-            lambda col, c: ((self.keep_default_dates and is_ok(col))
-                            or col in convert_dates))
+            lambda col, c: ((self.keep_default_dates and is_ok(col)) or
+                            col in convert_dates))
 
-
-#----------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # JSON normalization routines
+
 
 def nested_to_record(ds, prefix="", level=0):
     """a simplified json_normalize
@@ -568,6 +583,8 @@ def nested_to_record(ds, prefix="", level=0):
     Parameters
     ----------
     ds : dict or list of dicts
+    prefix: the prefix, optional, default: ""
+    level: the number of levels in the jason string, optional, default: 0
 
     Returns
     -------
@@ -611,7 +628,7 @@ def nested_to_record(ds, prefix="", level=0):
                 continue
             else:
                 v = new_d.pop(k)
-                new_d.update(nested_to_record(v, newkey, level+1))
+                new_d.update(nested_to_record(v, newkey, level + 1))
         new_ds.append(new_d)
 
     if singleton:
@@ -632,41 +649,46 @@ def json_normalize(data, record_path=None, meta=None,
     record_path : string or list of strings, default None
         Path in each object to list of records. If not passed, data will be
         assumed to be an array of records
-    meta : list of paths (string or list of strings)
+    meta : list of paths (string or list of strings), default None
         Fields to use as metadata for each record in resulting table
     record_prefix : string, default None
         If True, prefix records with dotted (?) path, e.g. foo.bar.field if
         path to records is ['foo', 'bar']
     meta_prefix : string, default None
 
-    Examples
-    --------
-    data = [{'state': 'Florida',
-             'shortname': 'FL',
-             'info': {
-                  'governor': 'Rick Scott'
-             },
-             'counties': [{'name': 'Dade', 'population': 12345},
-                         {'name': 'Broward', 'population': 40000},
-                         {'name': 'Palm Beach', 'population': 60000}]},
-            {'state': 'Ohio',
-             'shortname': 'OH',
-             'info': {
-                  'governor': 'John Kasich'
-             },
-             'counties': [{'name': 'Summit', 'population': 1234},
-                          {'name': 'Cuyahoga', 'population': 1337}]}]
-
-    result = json_normalize(data, 'counties', ['state', 'shortname',
-                                              ['info', 'governor']])
-
-      state    governor
-    Florida  Rick Scott
-
-
     Returns
     -------
     frame : DataFrame
+
+    Examples
+    --------
+
+    >>> data = [{'state': 'Florida',
+    ...          'shortname': 'FL',
+    ...          'info': {
+    ...               'governor': 'Rick Scott'
+    ...          },
+    ...          'counties': [{'name': 'Dade', 'population': 12345},
+    ...                      {'name': 'Broward', 'population': 40000},
+    ...                      {'name': 'Palm Beach', 'population': 60000}]},
+    ...         {'state': 'Ohio',
+    ...          'shortname': 'OH',
+    ...          'info': {
+    ...               'governor': 'John Kasich'
+    ...          },
+    ...          'counties': [{'name': 'Summit', 'population': 1234},
+    ...                       {'name': 'Cuyahoga', 'population': 1337}]}]
+    >>> from pandas.io.json import json_normalize
+    >>> result = json_normalize(data, 'counties', ['state', 'shortname',
+    ...                                           ['info', 'governor']])
+    >>> result
+             name  population info.governor    state shortname
+    0        Dade       12345    Rick Scott  Florida        FL
+    1     Broward       40000    Rick Scott  Florida        FL
+    2  Palm Beach       60000    Rick Scott  Florida        FL
+    3      Summit        1234   John Kasich     Ohio        OH
+    4    Cuyahoga        1337   John Kasich     Ohio        OH
+
     """
     def _pull_field(js, spec):
         result = js
@@ -720,7 +742,7 @@ def json_normalize(data, record_path=None, meta=None,
                         seen_meta[key] = _pull_field(obj, val[-1])
 
                 _recursive_extract(obj[path[0]], path[1:],
-                                   seen_meta, level=level+1)
+                                   seen_meta, level=level + 1)
         else:
             for obj in data:
                 recs = _pull_field(obj, path[0])

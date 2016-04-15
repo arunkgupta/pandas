@@ -1,7 +1,12 @@
 #!/bin/bash
 
+if [ "${TRAVIS_OS_NAME}" != "linux" ]; then
+   echo "not doing build_docs on non-linux"
+   exit 0
+fi
 
 cd "$TRAVIS_BUILD_DIR"
+echo "inside $0"
 
 git show --pretty="format:" --name-only HEAD~5.. --first-parent | grep -P "rst|txt|doc"
 
@@ -13,21 +18,27 @@ fi
 
 
 if [ x"$DOC_BUILD" != x"" ]; then
-    # we're running network tests, let's build the docs in the meantim
+
     echo "Will build docs"
-    pip install sphinx==1.1.3 ipython==1.1.0
+
+    source activate pandas
+    conda install -n pandas -c r r rpy2 --yes
+
+    time sudo apt-get $APT_ARGS install dvipng texlive-latex-base texlive-latex-extra
 
     mv "$TRAVIS_BUILD_DIR"/doc /tmp
     cd /tmp/doc
 
-    rm /tmp/doc/source/api.rst # no R
-    rm /tmp/doc/source/r_interface.rst # no R
+    echo ###############################
+    echo # Log file for the doc build  #
+    echo ###############################
 
-    echo ############################### > /tmp/doc.log
-    echo # Log file for the doc build  # > /tmp/doc.log
-    echo ############################### > /tmp/doc.log
-    echo "" > /tmp/doc.log
-    echo -e "y\n" | ./make.py --no-api 2>&1
+    echo ./make.py
+    ./make.py
+
+    echo ########################
+    echo # Create and send docs #
+    echo ########################
 
     cd /tmp/doc/build/html
     git config --global user.email "pandas-docs-bot@localhost.foo"

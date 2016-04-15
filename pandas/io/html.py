@@ -7,42 +7,56 @@ import os
 import re
 import numbers
 import collections
-import warnings
 
 from distutils.version import LooseVersion
 
 import numpy as np
 
-from pandas.io.common import _is_url, urlopen, parse_url
+from pandas.io.common import (EmptyDataError, _is_url, urlopen,
+                              parse_url, _validate_header_arg)
 from pandas.io.parsers import TextParser
 from pandas.compat import (lrange, lmap, u, string_types, iteritems,
                            raise_with_traceback, binary_type)
 from pandas.core import common as com
 from pandas import Series
+from pandas.core.common import AbstractMethodError
+from pandas.formats.printing import pprint_thing
+
+_IMPORTS = False
+_HAS_BS4 = False
+_HAS_LXML = False
+_HAS_HTML5LIB = False
 
 
-try:
-    import bs4
-except ImportError:
-    _HAS_BS4 = False
-else:
-    _HAS_BS4 = True
+def _importers():
+    # import things we need
+    # but make this done on a first use basis
 
+    global _IMPORTS
+    if _IMPORTS:
+        return
 
-try:
-    import lxml
-except ImportError:
-    _HAS_LXML = False
-else:
-    _HAS_LXML = True
+    _IMPORTS = True
 
+    global _HAS_BS4, _HAS_LXML, _HAS_HTML5LIB
 
-try:
-    import html5lib
-except ImportError:
-    _HAS_HTML5LIB = False
-else:
-    _HAS_HTML5LIB = True
+    try:
+        import bs4  # noqa
+        _HAS_BS4 = True
+    except ImportError:
+        pass
+
+    try:
+        import lxml  # noqa
+        _HAS_LXML = True
+    except ImportError:
+        pass
+
+    try:
+        import html5lib  # noqa
+        _HAS_HTML5LIB = True
+    except ImportError:
+        pass
 
 
 #############
@@ -171,6 +185,7 @@ class _HtmlFrameParser(object):
     See each method's respective documentation for details on their
     functionality.
     """
+
     def __init__(self, io, match, attrs, encoding):
         self.io = io
         self.match = match
@@ -218,7 +233,7 @@ class _HtmlFrameParser(object):
         text : str or unicode
             The text from an individual DOM node.
         """
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
     def _parse_td(self, obj):
         """Return the td elements from a row element.
@@ -232,7 +247,7 @@ class _HtmlFrameParser(object):
         columns : list of node-like
             These are the elements of each row, i.e., the columns.
         """
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
     def _parse_tables(self, doc, match, attrs):
         """Return all tables from the parsed DOM.
@@ -259,7 +274,7 @@ class _HtmlFrameParser(object):
         tables : list of node-like
             A list of <table> elements to be parsed into raw data.
         """
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
     def _parse_tr(self, table):
         """Return the list of row elements from the parsed table element.
@@ -274,7 +289,7 @@ class _HtmlFrameParser(object):
         rows : list of node-like
             A list row elements of a table, usually <tr> or <th> elements.
         """
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
     def _parse_thead(self, table):
         """Return the header of a table.
@@ -289,7 +304,7 @@ class _HtmlFrameParser(object):
         thead : node-like
             A <thead>...</thead> element.
         """
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
     def _parse_tbody(self, table):
         """Return the body of the table.
@@ -304,7 +319,7 @@ class _HtmlFrameParser(object):
         tbody : node-like
             A <tbody>...</tbody> element.
         """
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
     def _parse_tfoot(self, table):
         """Return the footer of the table if any.
@@ -319,7 +334,7 @@ class _HtmlFrameParser(object):
         tfoot : node-like
             A <tfoot>...</tfoot> element.
         """
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
     def _build_doc(self):
         """Return a tree-like object that can be used to iterate over the DOM.
@@ -328,7 +343,7 @@ class _HtmlFrameParser(object):
         -------
         obj : tree-like
         """
-        raise NotImplementedError
+        raise AbstractMethodError(self)
 
     def _build_table(self, table):
         header = self._parse_raw_thead(table)
@@ -373,6 +388,7 @@ class _BeautifulSoupHtml5LibFrameParser(_HtmlFrameParser):
     Documentation strings for this class are in the base class
     :class:`pandas.io.html._HtmlFrameParser`.
     """
+
     def __init__(self, *args, **kwargs):
         super(_BeautifulSoupHtml5LibFrameParser, self).__init__(*args,
                                                                 **kwargs)
@@ -476,6 +492,7 @@ class _LxmlFrameParser(_HtmlFrameParser):
     Documentation strings for this class are in the base class
     :class:`_HtmlFrameParser`.
     """
+
     def __init__(self, *args, **kwargs):
         super(_LxmlFrameParser, self).__init__(*args, **kwargs)
 
@@ -592,7 +609,7 @@ def _expand_elements(body):
         body[ind] += empty * (lens_max - length)
 
 
-def _data_to_frame(data, header, index_col, skiprows, infer_types,
+def _data_to_frame(data, header, index_col, skiprows,
                    parse_dates, tupleize_cols, thousands):
     head, body, foot = data
 
@@ -650,7 +667,9 @@ def _parser_dispatch(flavor):
         if not _HAS_HTML5LIB:
             raise ImportError("html5lib not found, please install it")
         if not _HAS_BS4:
-            raise ImportError("BeautifulSoup4 (bs4) not found, please install it")
+            raise ImportError(
+                "BeautifulSoup4 (bs4) not found, please install it")
+        import bs4
         if bs4.__version__ == LooseVersion('4.2.0'):
             raise ValueError("You're using a version"
                              " of BeautifulSoup4 (4.2.0) that has been"
@@ -666,7 +685,7 @@ def _parser_dispatch(flavor):
 
 
 def _print_as_set(s):
-    return '{%s}' % ', '.join([com.pprint_thing(el) for el in s])
+    return '{%s}' % ', '.join([pprint_thing(el) for el in s])
 
 
 def _validate_flavor(flavor):
@@ -694,7 +713,7 @@ def _validate_flavor(flavor):
     return flavor
 
 
-def _parse(flavor, io, match, header, index_col, skiprows, infer_types,
+def _parse(flavor, io, match, header, index_col, skiprows,
            parse_dates, tupleize_cols, thousands, attrs, encoding):
     flavor = _validate_flavor(flavor)
     compiled_match = re.compile(match)  # you can pass a compiled regex here
@@ -717,15 +736,20 @@ def _parse(flavor, io, match, header, index_col, skiprows, infer_types,
     ret = []
     for table in tables:
         try:
-            ret.append(_data_to_frame(table, header, index_col, skiprows,
-                        infer_types, parse_dates, tupleize_cols, thousands))
-        except StopIteration: # empty table
+            ret.append(_data_to_frame(data=table,
+                                      header=header,
+                                      index_col=index_col,
+                                      skiprows=skiprows,
+                                      parse_dates=parse_dates,
+                                      tupleize_cols=tupleize_cols,
+                                      thousands=thousands))
+        except EmptyDataError:  # empty table
             continue
     return ret
 
 
 def read_html(io, match='.+', flavor=None, header=None, index_col=None,
-              skiprows=None, infer_types=None, attrs=None, parse_dates=False,
+              skiprows=None, attrs=None, parse_dates=False,
               tupleize_cols=False, thousands=',', encoding=None):
     r"""Read HTML tables into a ``list`` of ``DataFrame`` objects.
 
@@ -762,9 +786,6 @@ def read_html(io, match='.+', flavor=None, header=None, index_col=None,
         sequence of integers or a slice is given, will skip the rows indexed by
         that sequence.  Note that a single element sequence means 'skip the nth
         row' whereas an integer means 'skip n rows'.
-
-    infer_types : None, optional
-        This has no effect since 0.15.0. It is here for backwards compatibility.
 
     attrs : dict or None, optional
         This is a dictionary of attributes that you can pass to use to identify
@@ -839,13 +860,13 @@ def read_html(io, match='.+', flavor=None, header=None, index_col=None,
     --------
     pandas.read_csv
     """
-    if infer_types is not None:
-        warnings.warn("infer_types has no effect since 0.15", FutureWarning)
+    _importers()
 
     # Type check here. We don't want to parse only to fail because of an
     # invalid value of an integer skiprows.
     if isinstance(skiprows, numbers.Integral) and skiprows < 0:
         raise ValueError('cannot skip rows starting from the end of the '
                          'data (you passed a negative value)')
-    return _parse(flavor, io, match, header, index_col, skiprows, infer_types,
+    _validate_header_arg(header)
+    return _parse(flavor, io, match, header, index_col, skiprows,
                   parse_dates, tupleize_cols, thousands, attrs, encoding)

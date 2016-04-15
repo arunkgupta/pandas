@@ -15,10 +15,10 @@ Options and Settings
 
 Overview
 --------
-pandas has an options system that lets you customize some aspects of it's behaviour,
+pandas has an options system that lets you customize some aspects of its behaviour,
 display-related options being those the user is most likely to adjust.
 
-Options have a full "dotted-style", case-insensitive name (e.g. ``display.max_rows``),
+Options have a full "dotted-style", case-insensitive name (e.g. ``display.max_rows``).
 You can get/set options directly as attributes of the top-level ``options`` attribute:
 
 .. ipython:: python
@@ -29,7 +29,7 @@ You can get/set options directly as attributes of the top-level ``options`` attr
    pd.options.display.max_rows
 
 There is also an API composed of 5 relevant functions, available directly from the ``pandas``
-namespace, and they are:
+namespace:
 
 - :func:`~pandas.get_option` / :func:`~pandas.set_option` - get/set the value of a single option.
 - :func:`~pandas.reset_option` - reset one or more options to their default value.
@@ -107,6 +107,7 @@ All options also have a default value, and you can use ``reset_option`` to do ju
 It's also possible to reset multiple options at once (using a regex):
 
 .. ipython:: python
+   :okwarning:
 
    pd.reset_option("^display")
 
@@ -129,7 +130,7 @@ Setting Startup Options in python/ipython Environment
 
 Using startup scripts for the python/ipython environment to import pandas and set options makes working with pandas more efficient.  To do this, create a .py or .ipy script in the startup directory of the desired profile.  An example where the startup folder is in a default ipython profile can be found at:
 
-.. code-block:: python
+.. code-block:: none
 
   $IPYTHONDIR/profile_default/startup
 
@@ -142,6 +143,7 @@ More information can be found in the `ipython documentation
   pd.set_option('display.max_rows', 999)
   pd.set_option('precision', 5)
 
+.. _options.frequently_used:
 
 Frequently Used Options
 -----------------------
@@ -153,7 +155,7 @@ lines are replaced by an ellipsis.
 
 .. ipython:: python
 
-   df=pd.DataFrame(np.random.randn(7,2))
+   df = pd.DataFrame(np.random.randn(7,2))
    pd.set_option('max_rows', 7)
    df
    pd.set_option('max_rows', 5)
@@ -165,7 +167,7 @@ dataframes to stretch across pages, wrapped over the full column vs row-wise.
 
 .. ipython:: python
 
-   df=pd.DataFrame(np.random.randn(5,10))
+   df = pd.DataFrame(np.random.randn(5,10))
    pd.set_option('expand_frame_repr', True)
    df
    pd.set_option('expand_frame_repr', False)
@@ -177,7 +179,7 @@ dataframes to stretch across pages, wrapped over the full column vs row-wise.
 
 .. ipython:: python
 
-   df=pd.DataFrame(np.random.randn(10,10))
+   df = pd.DataFrame(np.random.randn(10,10))
    pd.set_option('max_rows', 5)
    pd.set_option('large_repr', 'truncate')
    df
@@ -186,13 +188,13 @@ dataframes to stretch across pages, wrapped over the full column vs row-wise.
    pd.reset_option('large_repr')
    pd.reset_option('max_rows')
 
-``display.max_columnwidth`` sets the maximum width of columns.  Cells
+``display.max_colwidth`` sets the maximum width of columns.  Cells
 of this length or longer will be truncated with an ellipsis.
 
 .. ipython:: python
 
-   df=pd.DataFrame(np.array([['foo', 'bar', 'bim', 'uncomfortably long string'],
-                        ['horse', 'cow', 'banana', 'apple']]))
+   df = pd.DataFrame(np.array([['foo', 'bar', 'bim', 'uncomfortably long string'],
+                               ['horse', 'cow', 'banana', 'apple']]))
    pd.set_option('max_colwidth',40)
    df
    pd.set_option('max_colwidth', 6)
@@ -204,7 +206,7 @@ will be given.
 
 .. ipython:: python
 
-   df=pd.DataFrame(np.random.randn(10,10))
+   df = pd.DataFrame(np.random.randn(10,10))
    pd.set_option('max_info_columns', 11)
    df.info()
    pd.set_option('max_info_columns', 5)
@@ -218,7 +220,7 @@ can specify the option ``df.info(null_counts=True)`` to override on showing a pa
 
 .. ipython:: python
 
-   df=pd.DataFrame(np.random.choice([0,1,np.nan],size=(10,10)))
+   df  =pd.DataFrame(np.random.choice([0,1,np.nan], size=(10,10)))
    df
    pd.set_option('max_info_rows', 11)
    df.info()
@@ -226,12 +228,12 @@ can specify the option ``df.info(null_counts=True)`` to override on showing a pa
    df.info()
    pd.reset_option('max_info_rows')
 
-``display.precision`` sets the output display precision. This is only a
+``display.precision`` sets the output display precision in terms of decimal places. This is only a
 suggestion.
 
 .. ipython:: python
 
-   df=pd.DataFrame(np.random.randn(5,5))
+   df = pd.DataFrame(np.random.randn(5,5))
    pd.set_option('precision',7)
    df
    pd.set_option('precision',4)
@@ -243,7 +245,7 @@ precision at which the number is stored.
 
 .. ipython:: python
 
-   df=pd.DataFrame(np.random.randn(6,6))
+   df = pd.DataFrame(np.random.randn(6,6))
    pd.set_option('chop_threshold', 0)
    df
    pd.set_option('chop_threshold', .5)
@@ -255,7 +257,8 @@ Options are 'right', and 'left'.
 
 .. ipython:: python
 
-   df=pd.DataFrame(np.array([np.random.randn(6), np.random.randint(1,9,6)*.1, np.zeros(6)]).T, columns=['A', 'B', 'C'], dtype='float')
+   df = pd.DataFrame(np.array([np.random.randn(6), np.random.randint(1,9,6)*.1, np.zeros(6)]).T,
+                     columns=['A', 'B', 'C'], dtype='float')
    pd.set_option('colheader_justify', 'right')
    df
    pd.set_option('colheader_justify', 'left')
@@ -264,8 +267,10 @@ Options are 'right', and 'left'.
 
 
 
-List of Options
----------------
+.. _options.available:
+
+Available Options
+-----------------
 
 ========================== ============ ==================================
 Option                     Default      Function
@@ -291,7 +296,7 @@ display.expand_frame_repr  True         Whether to print out the full DataFrame
                                         multiple lines, `max_columns` is
                                         still respected, but the output will
                                         wrap-around across multiple "pages"
-                                        if it's width exceeds `display.width`.
+                                        if its width exceeds `display.width`.
 display.float_format       None         The callable should accept a floating
                                         point number and return a string with
                                         the desired format of the number.
@@ -305,6 +310,13 @@ display.large_repr         truncate     For DataFrames exceeding max_rows/max_co
                                         or switch to the view from df.info()
                                         (the behaviour in earlier versions of pandas).
                                         allowable settings, ['truncate', 'info']
+display.latex.repr         False        Whether to produce a latex DataFrame
+                                        representation for jupyter frontends
+                                        that support it.
+display.latex.escape       True         Escapes special caracters in Dataframes, when
+                                        using the to_latex method.
+display.latex.longtable    False        Specifies if the to_latex method of a Dataframe
+                                        uses the longtable format.
 display.line_width         80           Deprecated. Use `display.width` instead.
 display.max_columns        20           max_rows and max_columns are used
                                         in __repr__() methods to decide if
@@ -352,12 +364,6 @@ display.max_seq_items      100          when pretty-printing a long sequence,
 display.memory_usage       True         This specifies if the memory usage of
                                         a DataFrame should be displayed when the
                                         df.info() method is invoked.
-display.mpl_style          None         Setting this to 'default' will modify
-                                        the rcParams used by matplotlib
-                                        to give plots a more pleasing visual
-                                        style by default. Setting this to
-                                        None/False restores the values to
-                                        their initial value.
 display.multi_sparse       True         "Sparsify" MultiIndex display (don't
                                         display repeated elements in outer
                                         levels within groups)
@@ -366,9 +372,11 @@ display.notebook_repr_html True         When True, IPython notebook will
                                         pandas objects (if it is available).
 display.pprint_nest_depth  3            Controls the number of nested levels
                                         to process when pretty-printing
-display.precision          7            Floating point output precision
-                                        (number of significant digits). This is
-                                        only a suggestion
+display.precision          6            Floating point output precision in
+                                        terms of number of places after the
+                                        decimal, for regular formatting as well
+                                        as scientific notation. Similar to
+                                        numpy's ``precision`` print option
 display.show_dimensions    truncate     Whether to print out dimensions
                                         at the end of DataFrame repr.
                                         If 'truncate' is specified, only
@@ -412,7 +420,7 @@ mode.use_inf_as_null       False        True means treat None, NaN, -INF,
 Number Formatting
 ------------------
 
-pandas also allow you to set how numbers are displayed in the console.
+pandas also allows you to set how numbers are displayed in the console.
 This option is not set through the ``set_options`` API.
 
 Use the ``set_eng_float_format`` function
@@ -432,5 +440,66 @@ For instance:
 
 .. ipython:: python
    :suppress:
+   :okwarning:
 
    pd.reset_option('^display\.')
+
+To round floats on a case-by-case basis, you can also use :meth:`~pandas.Series.round` and :meth:`~pandas.DataFrame.round`.
+
+.. _options.east_asian_width:
+
+Unicode Formatting
+------------------
+
+.. warning::
+
+   Enabling this option will affect the performance for printing of DataFrame and Series (about 2 times slower).
+   Use only when it is actually required.
+
+Some East Asian countries use Unicode characters its width is corresponding to 2 alphabets.
+If DataFrame or Series contains these characters, default output cannot be aligned properly.
+
+.. note:: Screen captures are attached for each outputs to show the actual results.
+
+.. ipython:: python
+
+   df = pd.DataFrame({u'国籍': ['UK', u'日本'], u'名前': ['Alice', u'しのぶ']})
+   df;
+
+.. image:: _static/option_unicode01.png
+
+Enable ``display.unicode.east_asian_width`` allows pandas to check each character's "East Asian Width" property.
+These characters can be aligned properly by checking this property, but it takes longer time than standard ``len`` function.
+
+.. ipython:: python
+
+   pd.set_option('display.unicode.east_asian_width', True)
+   df;
+
+.. image:: _static/option_unicode02.png
+
+In addition, Unicode contains characters which width is "Ambiguous". These character's width should be either 1 or 2 depending on terminal setting or encoding. Because this cannot be distinguished from Python, ``display.unicode.ambiguous_as_wide`` option is added to handle this.
+
+By default, "Ambiguous" character's width, "¡" (inverted exclamation) in below example, is regarded as 1.
+
+.. ipython:: python
+
+   df = pd.DataFrame({'a': ['xxx', u'¡¡'], 'b': ['yyy', u'¡¡']})
+   df;
+
+.. image:: _static/option_unicode03.png
+
+Enabling ``display.unicode.ambiguous_as_wide`` lets pandas to figure these character's width as 2. Note that this option will be effective only when ``display.unicode.east_asian_width`` is enabled. Confirm starting position has been changed, but is not aligned properly because the setting is mismatched with this environment.
+
+.. ipython:: python
+
+   pd.set_option('display.unicode.ambiguous_as_wide', True)
+   df;
+
+.. image:: _static/option_unicode04.png
+
+.. ipython:: python
+   :suppress:
+
+   pd.set_option('display.unicode.east_asian_width', False)
+   pd.set_option('display.unicode.ambiguous_as_wide', False)

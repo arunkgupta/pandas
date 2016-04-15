@@ -16,7 +16,8 @@ def get_sys_info():
     if os.path.isdir(".git") and os.path.isdir("pandas"):
         try:
             pipe = subprocess.Popen('git log --format="%H" -n 1'.split(" "),
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE)
             so, serr = pipe.communicate()
         except:
             pass
@@ -32,8 +33,8 @@ def get_sys_info():
     blob.append(('commit', commit))
 
     try:
-        sysname, nodename, release, version, machine, processor = platform.uname(
-        )
+        (sysname, nodename, release,
+         version, machine, processor) = platform.uname()
         blob.extend([
             ("python", "%d.%d.%d.%s.%s" % sys.version_info[:]),
             ("python-bits", struct.calcsize("P") * 8),
@@ -61,15 +62,19 @@ def show_versions(as_json=False):
         # (MODULE_NAME, f(mod) -> mod version)
         ("pandas", lambda mod: mod.__version__),
         ("nose", lambda mod: mod.__version__),
+        ("pip", lambda mod: mod.__version__),
+        ("setuptools", lambda mod: mod.__version__),
         ("Cython", lambda mod: mod.__version__),
         ("numpy", lambda mod: mod.version.version),
         ("scipy", lambda mod: mod.version.version),
         ("statsmodels", lambda mod: mod.__version__),
+        ("xarray", lambda mod: mod.__version__),
         ("IPython", lambda mod: mod.__version__),
         ("sphinx", lambda mod: mod.__version__),
         ("patsy", lambda mod: mod.__version__),
         ("dateutil", lambda mod: mod.__version__),
         ("pytz", lambda mod: mod.VERSION),
+        ("blosc", lambda mod: mod.__version__),
         ("bottleneck", lambda mod: mod.__version__),
         ("tables", lambda mod: mod.__version__),
         ("numexpr", lambda mod: mod.__version__),
@@ -83,10 +88,12 @@ def show_versions(as_json=False):
         ("html5lib", lambda mod: mod.__version__),
         ("httplib2", lambda mod: mod.__version__),
         ("apiclient", lambda mod: mod.__version__),
-        ("rpy2", lambda mod: mod.__version__),
         ("sqlalchemy", lambda mod: mod.__version__),
         ("pymysql", lambda mod: mod.__version__),
         ("psycopg2", lambda mod: mod.__version__),
+        ("jinja2", lambda mod: mod.__version__),
+        ("boto", lambda mod: mod.__version__),
+        ("pandas_datareader", lambda mod: mod.__version__)
     ]
 
     deps_blob = list()
@@ -103,7 +110,6 @@ def show_versions(as_json=False):
             deps_blob.append((modname, None))
 
     if (as_json):
-        # 2.6-safe
         try:
             import json
         except:
@@ -111,7 +117,7 @@ def show_versions(as_json=False):
 
         j = dict(system=dict(sys_info), dependencies=dict(deps_blob))
 
-        if as_json == True:
+        if as_json is True:
             print(j)
         else:
             with codecs.open(as_json, "wb", encoding='utf8') as f:
@@ -131,11 +137,11 @@ def show_versions(as_json=False):
 
 
 def main():
-        # optparse is 2.6-safe
     from optparse import OptionParser
     parser = OptionParser()
     parser.add_option("-j", "--json", metavar="FILE", nargs=1,
-                      help="Save output as JSON into file, pass in '-' to output to stdout")
+                      help="Save output as JSON into file, pass in "
+                      "'-' to output to stdout")
 
     (options, args) = parser.parse_args()
 

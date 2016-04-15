@@ -31,7 +31,7 @@ div.bodywrapper {
 /* ugly hack, probably not attractive with other font size for re*/
     margin: 0 0 0 {{ theme_sidebarwidth|toint}}px;
     min-width: 540px;
-    max-width: 720px;
+    max-width: 800px;
 }
 
 
@@ -299,6 +299,19 @@ td.field-body blockquote {
     padding-left: 30px;
 }
 
+.rendered_html table {
+    margin-left: auto;
+    margin-right: auto;
+    border-right: 1px solid #cbcbcb;
+    border-bottom: 1px solid #cbcbcb;
+}
+
+.rendered_html td, th {
+    border-left: 1px solid #cbcbcb;
+    border-top: 1px solid #cbcbcb;
+    margin: 0;
+    padding: 0.5em .75em;
+}
 
 /**
  * See also

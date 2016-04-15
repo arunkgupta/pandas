@@ -1,14 +1,14 @@
 from vbench.api import Benchmark
 from datetime import datetime
 
-common_setup = """from pandas_vb_common import *
+common_setup = """from .pandas_vb_common import *
 """
 
 setup = common_setup + """
 N = 100000
 ngroups = 100
 
-def get_test_data(ngroups=100, n=N):
+def get_test_data(ngroups=100, n=100000):
     unique_groups = range(ngroups)
     arr = np.asarray(np.tile(unique_groups, n / ngroups), dtype=object)
 
@@ -143,7 +143,7 @@ offsets[np.random.rand(n) > 0.5] = np.timedelta64('nat')
 value2 = np.random.randn(n)
 value2[np.random.rand(n) > 0.5] = np.nan
 
-obj = tm.choice(list('ab'), size=n).astype(object)
+obj = np.random.choice(list('ab'), size=n).astype(object)
 obj[np.random.randn(n) > 0.5] = np.nan
 
 df = DataFrame({'key1': np.random.randint(0, 500, size=n),
@@ -194,6 +194,15 @@ s = Series(np.tile(uniques, N // K))
 series_value_counts_strings = Benchmark('s.value_counts()', setup,
                                         start_date=datetime(2011, 10, 21))
 
+#value_counts on float dtype
+
+setup = common_setup + """
+s = Series(np.random.randint(0, 1000, size=100000)).astype(float)
+"""
+
+series_value_counts_float64 = Benchmark('s.value_counts()', setup,
+                                      start_date=datetime(2015, 8, 17))
+
 #----------------------------------------------------------------------
 # pivot_table
 
@@ -212,7 +221,7 @@ df = DataFrame({'key1': fac1.take(ind1),
 'value3' : np.random.randn(100000)})
 """
 
-stmt = "df.pivot_table(rows='key1', cols=['key2', 'key3'])"
+stmt = "df.pivot_table(index='key1', columns=['key2', 'key3'])"
 groupby_pivot_table = Benchmark(stmt, setup, start_date=datetime(2011, 12, 15))
 
 
@@ -243,13 +252,13 @@ labels = labels.take(np.random.permutation(len(labels)))
 """
 
 groupby_first_float64 = Benchmark('data.groupby(labels).first()', setup,
-                          start_date=datetime(2012, 5, 1))
+                                  start_date=datetime(2012, 5, 1))
 
 groupby_first_float32 = Benchmark('data2.groupby(labels).first()', setup,
                                   start_date=datetime(2013, 1, 1))
 
 groupby_last_float64 = Benchmark('data.groupby(labels).last()', setup,
-                         start_date=datetime(2012, 5, 1))
+                                 start_date=datetime(2012, 5, 1))
 
 groupby_last_float32 = Benchmark('data2.groupby(labels).last()', setup,
                                  start_date=datetime(2013, 1, 1))
@@ -259,7 +268,7 @@ groupby_nth_float64_none = Benchmark('data.groupby(labels).nth(0)', setup,
 groupby_nth_float32_none = Benchmark('data2.groupby(labels).nth(0)', setup,
                                      start_date=datetime(2013, 1, 1))
 groupby_nth_float64_any = Benchmark('data.groupby(labels).nth(0,dropna="all")', setup,
-                                     start_date=datetime(2012, 5, 1))
+                                    start_date=datetime(2012, 5, 1))
 groupby_nth_float32_any = Benchmark('data2.groupby(labels).nth(0,dropna="all")', setup,
                                     start_date=datetime(2013, 1, 1))
 
@@ -269,9 +278,9 @@ df = DataFrame({'a' : date_range('1/1/2011',periods=100000,freq='s'),'b' : range
 """
 
 groupby_first_datetimes = Benchmark('df.groupby("b").first()', setup,
-                                 start_date=datetime(2013, 5, 1))
+                                    start_date=datetime(2013, 5, 1))
 groupby_last_datetimes = Benchmark('df.groupby("b").last()', setup,
-                                 start_date=datetime(2013, 5, 1))
+                                   start_date=datetime(2013, 5, 1))
 groupby_nth_datetimes_none = Benchmark('df.groupby("b").nth(0)', setup,
                                        start_date=datetime(2013, 5, 1))
 groupby_nth_datetimes_any = Benchmark('df.groupby("b").nth(0,dropna="all")', setup,
@@ -390,6 +399,18 @@ df = DataFrame({'ii':range(N),'bb':[True for x in range(N)]})
 
 groupby_sum_booleans = Benchmark("df.groupby('ii').sum()", setup)
 
+
+#----------------------------------------------------------------------
+# multi-indexed group sum #9049
+
+setup = common_setup + """
+N = 50
+df = DataFrame({'A': range(N) * 2, 'B': range(N*2), 'C': 1}).set_index(["A", "B"])
+"""
+
+groupby_sum_multiindex = Benchmark("df.groupby(level=[0, 1]).sum()", setup)
+
+
 #----------------------------------------------------------------------
 # Transform testing
 
@@ -408,16 +429,16 @@ step = (secid_max - secid_min) // (n_securities - 1)
 security_ids = map(lambda x: hex(x)[2:10].upper(), range(secid_min, secid_max + 1, step))
 
 data_index = MultiIndex(levels=[dates.values, security_ids],
-    labels=[[i for i in xrange(n_dates) for _ in xrange(n_securities)], range(n_securities) * n_dates],
+    labels=[[i for i in range(n_dates) for _ in xrange(n_securities)], range(n_securities) * n_dates],
     names=['date', 'security_id'])
 n_data = len(data_index)
 
-columns = Index(['factor{}'.format(i) for i in xrange(1, n_columns + 1)])
+columns = Index(['factor{}'.format(i) for i in range(1, n_columns + 1)])
 
 data = DataFrame(np.random.randn(n_data, n_columns), index=data_index, columns=columns)
 
 step = int(n_data * share_na)
-for column_index in xrange(n_columns):
+for column_index in range(n_columns):
     index = column_index
     while index < n_data:
         data.set_value(data_index[index], columns[column_index], np.nan)
@@ -484,6 +505,41 @@ df = DataFrame(np.random.randint(1, n / 100, (n, 3)),
 
 groupby_agg_builtins1 = Benchmark("df.groupby('jim').agg([sum, min, max])", setup)
 groupby_agg_builtins2 = Benchmark("df.groupby(['jim', 'joe']).agg([sum, min, max])", setup)
+
+
+setup = common_setup + '''
+arr = np.random.randint(- 1 << 12, 1 << 12, (1 << 17, 5))
+i = np.random.choice(len(arr), len(arr) * 5)
+arr = np.vstack((arr, arr[i]))  # add sume duplicate rows
+
+i = np.random.permutation(len(arr))
+arr = arr[i]  # shuffle rows
+
+df = DataFrame(arr, columns=list('abcde'))
+df['jim'], df['joe'] = np.random.randn(2, len(df)) * 10
+'''
+
+groupby_int64_overflow = Benchmark("df.groupby(list('abcde')).max()", setup,
+                                   name='groupby_int64_overflow')
+
+
+setup = common_setup + '''
+from itertools import product
+from string import ascii_letters, digits
+
+n = 5 * 7 * 11 * (1 << 9)
+alpha = list(map(''.join, product(ascii_letters + digits, repeat=4)))
+f = lambda k: np.repeat(np.random.choice(alpha, n // k), k)
+
+df = DataFrame({'a': f(11), 'b': f(7), 'c': f(5), 'd': f(1)})
+df['joe'] = (np.random.randn(len(df)) * 10).round(3)
+
+i = np.random.permutation(len(df))
+df = df.iloc[i].reset_index(drop=True).copy()
+'''
+
+groupby_multi_index = Benchmark("df.groupby(list('abcd')).max()", setup,
+                                name='groupby_multi_index')
 
 #----------------------------------------------------------------------
 # groupby with a variable value for ngroups
@@ -559,3 +615,6 @@ for ngroups in ngroups_list:
     for func_name in no_arg_func_list:
         bmark = make_large_ngroups_bmark(ngroups, func_name)
         inject_bmark_into_globals(bmark)
+
+# avoid bmark to be collected as Benchmark object
+del bmark

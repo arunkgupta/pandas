@@ -2,7 +2,6 @@ from pandas.compat import range
 import nose
 
 import numpy as np
-from numpy.testing.decorators import slow
 
 from pandas import Series, date_range
 import pandas.util.testing as tm
@@ -17,6 +16,7 @@ class TestPivotAnnual(tm.TestCase):
     """
     New pandas of scikits.timeseries pivot_annual
     """
+
     def test_daily(self):
         rng = date_range('1/1/2000', '12/31/2004', freq='D')
         ts = Series(np.random.randn(len(rng)), index=rng)
@@ -30,17 +30,20 @@ class TestPivotAnnual(tm.TestCase):
             subset = ts[doy == i]
             subset.index = [x.year for x in subset.index]
 
-            tm.assert_series_equal(annual[i].dropna(), subset)
+            result = annual[i].dropna()
+            tm.assert_series_equal(result, subset, check_names=False)
+            self.assertEqual(result.name, i)
 
         # check leap days
         leaps = ts[(ts.index.month == 2) & (ts.index.day == 29)]
         day = leaps.index.dayofyear[0]
         leaps.index = leaps.index.year
+        leaps.name = 60
         tm.assert_series_equal(annual[day].dropna(), leaps)
 
     def test_hourly(self):
-        rng_hourly = date_range(
-            '1/1/1994', periods=(18 * 8760 + 4 * 24), freq='H')
+        rng_hourly = date_range('1/1/1994', periods=(18 * 8760 + 4 * 24),
+                                freq='H')
         data_hourly = np.random.randint(100, 350, rng_hourly.size)
         ts_hourly = Series(data_hourly, index=rng_hourly)
 
@@ -57,13 +60,15 @@ class TestPivotAnnual(tm.TestCase):
             subset = ts_hourly[hoy == i]
             subset.index = [x.year for x in subset.index]
 
-            tm.assert_series_equal(annual[i].dropna(), subset)
+            result = annual[i].dropna()
+            tm.assert_series_equal(result, subset, check_names=False)
+            self.assertEqual(result.name, i)
 
-        leaps = ts_hourly[(ts_hourly.index.month == 2) &
-                          (ts_hourly.index.day == 29) &
-                          (ts_hourly.index.hour == 0)]
+        leaps = ts_hourly[(ts_hourly.index.month == 2) & (
+            ts_hourly.index.day == 29) & (ts_hourly.index.hour == 0)]
         hour = leaps.index.dayofyear[0] * 24 - 23
         leaps.index = leaps.index.year
+        leaps.name = 1417
         tm.assert_series_equal(annual[hour].dropna(), leaps)
 
     def test_weekly(self):
@@ -79,7 +84,9 @@ class TestPivotAnnual(tm.TestCase):
         for i in range(1, 13):
             subset = ts[month == i]
             subset.index = [x.year for x in subset.index]
-            tm.assert_series_equal(annual[i].dropna(), subset)
+            result = annual[i].dropna()
+            tm.assert_series_equal(result, subset, check_names=False)
+            self.assertEqual(result.name, i)
 
     def test_period_monthly(self):
         pass
@@ -95,12 +102,13 @@ def test_normalize_date():
     value = date(2012, 9, 7)
 
     result = normalize_date(value)
-    assert(result == datetime(2012, 9, 7))
+    assert (result == datetime(2012, 9, 7))
 
     value = datetime(2012, 9, 7, 12)
 
     result = normalize_date(value)
-    assert(result == datetime(2012, 9, 7))
+    assert (result == datetime(2012, 9, 7))
+
 
 if __name__ == '__main__':
     nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure'],

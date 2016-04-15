@@ -6,24 +6,17 @@
 
    import numpy as np
    import pandas as pd
-   from numpy.random import randn, rand, randint
    np.random.seed(123456)
-   from pandas import DataFrame, Series, date_range, options
-   import pandas.util.testing as tm
    np.set_printoptions(precision=4, suppress=True)
+   pd.options.display.max_rows = 15
+   import matplotlib
+   matplotlib.style.use('ggplot')
    import matplotlib.pyplot as plt
    plt.close('all')
-   import matplotlib
-   try:
-      matplotlib.style.use('ggplot')
-   except AttributeError:
-      options.display.mpl_style = 'default'
-   options.display.max_rows = 15
-   from pandas.compat import lrange
 
-********
-Plotting
-********
+*************
+Visualization
+*************
 
 We use the standard convention for referencing the matplotlib API:
 
@@ -31,13 +24,12 @@ We use the standard convention for referencing the matplotlib API:
 
    import matplotlib.pyplot as plt
 
-.. versionadded:: 0.11.0
+The plots in this document are made using matplotlib's ``ggplot`` style (new in version 1.4):
 
-The plots in this document are made using matplotlib's ``ggplot`` style (new in version 1.4).
-If your version of matplotlib is 1.3 or lower, setting the ``display.mpl_style`` to ``'default'``
-with ``pd.options.display.mpl_style = 'default'``
-to produce more appealing plots.
-When set, matplotlib's ``rcParams`` are changed (globally!) to nicer-looking settings.
+.. code-block:: python
+
+   import matplotlib
+   matplotlib.style.use('ggplot')
 
 We provide the basics in pandas to easily create decent looking plots.
 See the :ref:`ecosystem <ecosystem.visualization>` section for visualization
@@ -64,7 +56,7 @@ The ``plot`` method on Series and DataFrame is just a simple wrapper around
 
 .. ipython:: python
 
-   ts = Series(randn(1000), index=date_range('1/1/2000', periods=1000))
+   ts = pd.Series(np.random.randn(1000), index=pd.date_range('1/1/2000', periods=1000))
    ts = ts.cumsum()
 
    @savefig series_plot_basic.png
@@ -83,7 +75,7 @@ On DataFrame, :meth:`~DataFrame.plot` is a convenience to plot all of the column
 
 .. ipython:: python
 
-   df = DataFrame(randn(1000, 4), index=ts.index, columns=list('ABCD'))
+   df = pd.DataFrame(np.random.randn(1000, 4), index=ts.index, columns=list('ABCD'))
    df = df.cumsum()
 
    @savefig frame_plot_basic.png
@@ -101,15 +93,15 @@ You can plot one column versus another using the `x` and `y` keywords in
 
 .. ipython:: python
 
-   df3 = DataFrame(randn(1000, 2), columns=['B', 'C']).cumsum()
-   df3['A'] = Series(list(range(len(df))))
+   df3 = pd.DataFrame(np.random.randn(1000, 2), columns=['B', 'C']).cumsum()
+   df3['A'] = pd.Series(list(range(len(df))))
 
    @savefig df_plot_xy.png
    df3.plot(x='A', y='B')
 
 .. note::
 
-   For more formatting and sytling options, see :ref:`below <visualization.formatting>`.
+   For more formatting and styling options, see :ref:`below <visualization.formatting>`.
 
 .. ipython:: python
     :suppress:
@@ -121,8 +113,9 @@ You can plot one column versus another using the `x` and `y` keywords in
 Other Plots
 -----------
 
-The ``kind`` keyword argument of :meth:`~DataFrame.plot` accepts
-a handful of values for plots other than the default Line plot.
+Plotting methods allow for a handful of plot styles other than the
+default Line plot. These methods can be provided as the ``kind``
+keyword argument to :meth:`~DataFrame.plot`.
 These include:
 
 * :ref:`'bar' <visualization.barplot>` or :ref:`'barh' <visualization.barplot>` for bar plots
@@ -133,6 +126,28 @@ These include:
 * :ref:`'scatter' <visualization.scatter>` for scatter plots
 * :ref:`'hexbin' <visualization.hexbin>` for hexagonal bin plots
 * :ref:`'pie' <visualization.pie>` for pie plots
+
+For example, a bar plot can be created the following way:
+
+.. ipython:: python
+
+   plt.figure();
+
+   @savefig bar_plot_ex.png
+   df.ix[5].plot(kind='bar'); plt.axhline(0, color='k')
+
+.. versionadded:: 0.17.0
+
+You can also create these other plots using the methods ``DataFrame.plot.<kind>`` instead of providing the ``kind`` keyword argument. This makes it easier to discover plot methods and the specific arguments they use:
+
+.. ipython::
+    :verbatim:
+
+    In [14]: df = pd.DataFrame()
+
+    In [15]: df.plot.<TAB>
+    df.plot.area     df.plot.barh     df.plot.density  df.plot.hist     df.plot.line     df.plot.scatter
+    df.plot.bar      df.plot.box      df.plot.hexbin   df.plot.kde      df.plot.pie
 
 In addition to these ``kind`` s, there are  the :ref:`DataFrame.hist() <visualization.hist>`,
 and :ref:`DataFrame.boxplot() <visualization.box>` methods, which use a separate interface.
@@ -164,9 +179,9 @@ For labeled, non-time series data, you may wish to produce a bar plot:
    plt.figure();
 
    @savefig bar_plot_ex.png
-   df.ix[5].plot(kind='bar'); plt.axhline(0, color='k')
+   df.ix[5].plot.bar(); plt.axhline(0, color='k')
 
-Calling a DataFrame's :meth:`~DataFrame.plot` method with ``kind='bar'`` produces a multiple
+Calling a DataFrame's :meth:`plot.bar() <DataFrame.plot.bar>` method produces a multiple
 bar plot:
 
 .. ipython:: python
@@ -178,10 +193,10 @@ bar plot:
 
 .. ipython:: python
 
-   df2 = DataFrame(rand(10, 4), columns=['a', 'b', 'c', 'd'])
+   df2 = pd.DataFrame(np.random.rand(10, 4), columns=['a', 'b', 'c', 'd'])
 
    @savefig bar_plot_multi_ex.png
-   df2.plot(kind='bar');
+   df2.plot.bar();
 
 To produce a stacked bar plot, pass ``stacked=True``:
 
@@ -194,9 +209,9 @@ To produce a stacked bar plot, pass ``stacked=True``:
 .. ipython:: python
 
    @savefig bar_plot_stacked_ex.png
-   df2.plot(kind='bar', stacked=True);
+   df2.plot.bar(stacked=True);
 
-To get horizontal bar plots, pass ``kind='barh'``:
+To get horizontal bar plots, use the ``barh`` method:
 
 .. ipython:: python
    :suppress:
@@ -207,7 +222,7 @@ To get horizontal bar plots, pass ``kind='barh'``:
 .. ipython:: python
 
    @savefig barh_plot_stacked_ex.png
-   df2.plot(kind='barh', stacked=True);
+   df2.plot.barh(stacked=True);
 
 .. _visualization.hist:
 
@@ -216,17 +231,17 @@ Histograms
 
 .. versionadded:: 0.15.0
 
-Histogram can be drawn specifying ``kind='hist'``.
+Histogram can be drawn by using the :meth:`DataFrame.plot.hist` and :meth:`Series.plot.hist` methods.
 
 .. ipython:: python
 
-   df4 = DataFrame({'a': randn(1000) + 1, 'b': randn(1000),
-                    'c': randn(1000) - 1}, columns=['a', 'b', 'c'])
+   df4 = pd.DataFrame({'a': np.random.randn(1000) + 1, 'b': np.random.randn(1000),
+                       'c': np.random.randn(1000) - 1}, columns=['a', 'b', 'c'])
 
    plt.figure();
 
    @savefig hist_new.png
-   df4.plot(kind='hist', alpha=0.5)
+   df4.plot.hist(alpha=0.5)
 
 
 .. ipython:: python
@@ -241,7 +256,7 @@ Histogram can be stacked by ``stacked=True``. Bin size can be changed by ``bins`
    plt.figure();
 
    @savefig hist_new_stacked.png
-   df4.plot(kind='hist', stacked=True, bins=20)
+   df4.plot.hist(stacked=True, bins=20)
 
 .. ipython:: python
    :suppress:
@@ -255,7 +270,7 @@ You can pass other keywords supported by matplotlib ``hist``. For example, horiz
    plt.figure();
 
    @savefig hist_new_kwargs.png
-   df4['a'].plot(kind='hist', orientation='horizontal', cumulative=True)
+   df4['a'].plot.hist(orientation='horizontal', cumulative=True)
 
 .. ipython:: python
    :suppress:
@@ -263,7 +278,7 @@ You can pass other keywords supported by matplotlib ``hist``. For example, horiz
    plt.close('all')
 
 See the :meth:`hist <matplotlib.axes.Axes.hist>` method and the
-`matplotlib hist documenation <http://matplotlib.org/api/pyplot_api.html#matplotlib.pyplot.hist>`__ for more.
+`matplotlib hist documentation <http://matplotlib.org/api/pyplot_api.html#matplotlib.pyplot.hist>`__ for more.
 
 
 The existing interface ``DataFrame.hist`` to plot histogram still can be used.
@@ -304,10 +319,10 @@ The ``by`` keyword can be specified to plot grouped histograms:
 
 .. ipython:: python
 
-   data = Series(randn(1000))
+   data = pd.Series(np.random.randn(1000))
 
    @savefig grouped_hist.png
-   data.hist(by=randint(0, 4, 1000), figsize=(6, 4))
+   data.hist(by=np.random.randint(0, 4, 1000), figsize=(6, 4))
 
 
 .. _visualization.box:
@@ -315,12 +330,10 @@ The ``by`` keyword can be specified to plot grouped histograms:
 Box Plots
 ~~~~~~~~~
 
-Boxplot can be drawn calling a ``Series`` and ``DataFrame.plot`` with ``kind='box'``,
-or ``DataFrame.boxplot`` to visualize the distribution of values within each column.
-
 .. versionadded:: 0.15.0
 
-``plot`` method now supports ``kind='box'`` to draw boxplot.
+Boxplot can be drawn calling :meth:`Series.plot.box` and :meth:`DataFrame.plot.box`,
+or :meth:`DataFrame.boxplot` to visualize the distribution of values within each column.
 
 For instance, here is a boxplot representing five trials of 10 observations of
 a uniform random variable on [0,1).
@@ -333,10 +346,10 @@ a uniform random variable on [0,1).
 
 .. ipython:: python
 
-   df = DataFrame(rand(10, 5), columns=['A', 'B', 'C', 'D', 'E'])
+   df = pd.DataFrame(np.random.rand(10, 5), columns=['A', 'B', 'C', 'D', 'E'])
 
    @savefig box_plot_new.png
-   df.plot(kind='box')
+   df.plot.box()
 
 Boxplot can be colorized by passing ``color`` keyword. You can pass a ``dict``
 whose keys are ``boxes``, ``whiskers``, ``medians`` and ``caps``.
@@ -357,7 +370,7 @@ more complicated colorization, you can get each drawn artists by passing
                 medians='DarkBlue', caps='Gray')
 
    @savefig box_new_colorize.png
-   df.plot(kind='box', color=color, sym='r+')
+   df.plot.box(color=color, sym='r+')
 
 .. ipython:: python
    :suppress:
@@ -371,11 +384,11 @@ For example, horizontal and custom-positioned boxplot can be drawn by
 .. ipython:: python
 
    @savefig box_new_kwargs.png
-   df.plot(kind='box', vert=False, positions=[1, 4, 5, 6, 8])
+   df.plot.box(vert=False, positions=[1, 4, 5, 6, 8])
 
 
 See the :meth:`boxplot <matplotlib.axes.Axes.boxplot>` method and the
-`matplotlib boxplot documenation <http://matplotlib.org/api/pyplot_api.html#matplotlib.pyplot.boxplot>`__ for more.
+`matplotlib boxplot documentation <http://matplotlib.org/api/pyplot_api.html#matplotlib.pyplot.boxplot>`__ for more.
 
 
 The existing interface ``DataFrame.boxplot`` to plot boxplot still can be used.
@@ -389,7 +402,7 @@ The existing interface ``DataFrame.boxplot`` to plot boxplot still can be used.
 .. ipython:: python
    :okwarning:
 
-   df = DataFrame(rand(10,5))
+   df = pd.DataFrame(np.random.rand(10,5))
    plt.figure();
 
    @savefig box_plot_ex.png
@@ -407,8 +420,8 @@ groupings.  For instance,
 .. ipython:: python
    :okwarning:
 
-   df = DataFrame(rand(10,2), columns=['Col1', 'Col2'] )
-   df['X'] = Series(['A','A','A','A','A','B','B','B','B','B'])
+   df = pd.DataFrame(np.random.rand(10,2), columns=['Col1', 'Col2'] )
+   df['X'] = pd.Series(['A','A','A','A','A','B','B','B','B','B'])
 
    plt.figure();
 
@@ -427,9 +440,9 @@ columns:
 .. ipython:: python
    :okwarning:
 
-   df = DataFrame(rand(10,3), columns=['Col1', 'Col2', 'Col3'])
-   df['X'] = Series(['A','A','A','A','A','B','B','B','B','B'])
-   df['Y'] = Series(['A','B','A','B','A','B','A','B','A','B'])
+   df = pd.DataFrame(np.random.rand(10,3), columns=['Col1', 'Col2', 'Col3'])
+   df['X'] = pd.Series(['A','A','A','A','A','B','B','B','B','B'])
+   df['Y'] = pd.Series(['A','B','A','B','A','B','A','B','A','B'])
 
    plt.figure();
 
@@ -450,9 +463,9 @@ When ``subplots=False`` / ``by`` is ``None``:
 
 * if ``return_type`` is ``'dict'``, a dictionary containing the :class:`matplotlib Lines <matplotlib.lines.Line2D>` is returned. The keys are "boxes", "caps", "fliers", "medians", and "whiskers".
    This is the default of ``boxplot`` in historical reason.
-   Note that ``plot(kind='box')`` returns ``Axes`` as default as the same as other plots.
+   Note that ``plot.box()`` returns ``Axes`` by default same as other plots.
 * if ``return_type`` is ``'axes'``, a :class:`matplotlib Axes <matplotlib.axes.Axes>` containing the boxplot is returned.
-* if ``return_type`` is ``'both'`` a namedtuple containging the :class:`matplotlib Axes <matplotlib.axes.Axes>`
+* if ``return_type`` is ``'both'`` a namedtuple containing the :class:`matplotlib Axes <matplotlib.axes.Axes>`
    and :class:`matplotlib Lines <matplotlib.lines.Line2D>` is returned
 
 When ``subplots=True`` / ``by`` is some column of the DataFrame:
@@ -470,7 +483,7 @@ DataFrame.
    :okwarning:
 
    np.random.seed(1234)
-   df_box = DataFrame(np.random.randn(50, 2))
+   df_box = pd.DataFrame(np.random.randn(50, 2))
    df_box['g'] = np.random.choice(['A', 'B'], size=50)
    df_box.loc[df_box['g'] == 'B', 1] += 3
 
@@ -502,7 +515,8 @@ Area Plot
 
 .. versionadded:: 0.14
 
-You can create area plots with ``Series.plot`` and ``DataFrame.plot`` by passing ``kind='area'``. Area plots are stacked by default. To produce stacked area plot, each column must be either all positive or all negative values.
+You can create area plots with :meth:`Series.plot.area` and :meth:`DataFrame.plot.area`.
+Area plots are stacked by default. To produce stacked area plot, each column must be either all positive or all negative values.
 
 When input data contains `NaN`, it will be automatically filled by 0. If you want to drop or fill by different values, use :func:`dataframe.dropna` or :func:`dataframe.fillna` before calling `plot`.
 
@@ -514,10 +528,10 @@ When input data contains `NaN`, it will be automatically filled by 0. If you wan
 
 .. ipython:: python
 
-   df = DataFrame(rand(10, 4), columns=['a', 'b', 'c', 'd'])
+   df = pd.DataFrame(np.random.rand(10, 4), columns=['a', 'b', 'c', 'd'])
 
    @savefig area_plot_stacked.png
-   df.plot(kind='area');
+   df.plot.area();
 
 To produce an unstacked plot, pass ``stacked=False``. Alpha value is set to 0.5 unless otherwise specified:
 
@@ -530,7 +544,7 @@ To produce an unstacked plot, pass ``stacked=False``. Alpha value is set to 0.5 
 .. ipython:: python
 
    @savefig area_plot_unstacked.png
-   df.plot(kind='area', stacked=False);
+   df.plot.area(stacked=False);
 
 .. _visualization.scatter:
 
@@ -539,7 +553,7 @@ Scatter Plot
 
 .. versionadded:: 0.13
 
-You can create scatter plots with ``DataFrame.plot`` by passing ``kind='scatter'``.
+Scatter plot can be drawn by using the :meth:`DataFrame.plot.scatter` method.
 Scatter plot requires numeric columns for x and y axis.
 These can be specified by ``x`` and ``y`` keywords each.
 
@@ -552,21 +566,19 @@ These can be specified by ``x`` and ``y`` keywords each.
 
 .. ipython:: python
 
-   df = DataFrame(rand(50, 4), columns=['a', 'b', 'c', 'd'])
+   df = pd.DataFrame(np.random.rand(50, 4), columns=['a', 'b', 'c', 'd'])
 
    @savefig scatter_plot.png
-   df.plot(kind='scatter', x='a', y='b');
+   df.plot.scatter(x='a', y='b');
 
 To plot multiple column groups in a single axes, repeat ``plot`` method specifying target ``ax``.
 It is recommended to specify ``color`` and ``label`` keywords to distinguish each groups.
 
 .. ipython:: python
 
-   ax = df.plot(kind='scatter', x='a', y='b',
-                color='DarkBlue', label='Group 1');
+   ax = df.plot.scatter(x='a', y='b', color='DarkBlue', label='Group 1');
    @savefig scatter_plot_repeated.png
-   df.plot(kind='scatter', x='c', y='d',
-           color='DarkGreen', label='Group 2', ax=ax);
+   df.plot.scatter(x='c', y='d', color='DarkGreen', label='Group 2', ax=ax);
 
 .. ipython:: python
    :suppress:
@@ -579,7 +591,7 @@ each point:
 .. ipython:: python
 
    @savefig scatter_plot_colored.png
-   df.plot(kind='scatter', x='a', y='b', c='c', s=50);
+   df.plot.scatter(x='a', y='b', c='c', s=50);
 
 
 .. ipython:: python
@@ -593,7 +605,7 @@ Below example shows a bubble chart using a dataframe column values as bubble siz
 .. ipython:: python
 
    @savefig scatter_plot_bubble.png
-   df.plot(kind='scatter', x='a', y='b', s=df['c']*200);
+   df.plot.scatter(x='a', y='b', s=df['c']*200);
 
 .. ipython:: python
    :suppress:
@@ -601,7 +613,7 @@ Below example shows a bubble chart using a dataframe column values as bubble siz
    plt.close('all')
 
 See the :meth:`scatter <matplotlib.axes.Axes.scatter>` method and the
-`matplotlib scatter documenation <http://matplotlib.org/api/pyplot_api.html#matplotlib.pyplot.scatter>`__ for more.
+`matplotlib scatter documentation <http://matplotlib.org/api/pyplot_api.html#matplotlib.pyplot.scatter>`__ for more.
 
 .. _visualization.hexbin:
 
@@ -610,8 +622,7 @@ Hexagonal Bin Plot
 
 .. versionadded:: 0.14
 
-You can create hexagonal bin plots with :meth:`DataFrame.plot` and
-``kind='hexbin'``.
+You can create hexagonal bin plots with :meth:`DataFrame.plot.hexbin`.
 Hexbin plots can be a useful alternative to scatter plots if your data are
 too dense to plot each point individually.
 
@@ -623,11 +634,11 @@ too dense to plot each point individually.
 
 .. ipython:: python
 
-   df = DataFrame(randn(1000, 2), columns=['a', 'b'])
+   df = pd.DataFrame(np.random.randn(1000, 2), columns=['a', 'b'])
    df['b'] = df['b'] + np.arange(1000)
 
    @savefig hexbin_plot.png
-   df.plot(kind='hexbin', x='a', y='b', gridsize=25)
+   df.plot.hexbin(x='a', y='b', gridsize=25)
 
 
 A useful keyword argument is ``gridsize``; it controls the number of hexagons
@@ -651,12 +662,12 @@ given by column ``z``. The bins are aggregated with numpy's ``max`` function.
 
 .. ipython:: python
 
-   df = DataFrame(randn(1000, 2), columns=['a', 'b'])
+   df = pd.DataFrame(np.random.randn(1000, 2), columns=['a', 'b'])
    df['b'] = df['b'] = df['b'] + np.arange(1000)
    df['z'] = np.random.uniform(0, 3, 1000)
 
    @savefig hexbin_plot_agg.png
-   df.plot(kind='hexbin', x='a', y='b', C='z', reduce_C_function=np.max,
+   df.plot.hexbin(x='a', y='b', C='z', reduce_C_function=np.max,
            gridsize=25)
 
 .. ipython:: python
@@ -665,7 +676,7 @@ given by column ``z``. The bins are aggregated with numpy's ``max`` function.
    plt.close('all')
 
 See the :meth:`hexbin <matplotlib.axes.Axes.hexbin>` method and the
-`matplotlib hexbin documenation <http://matplotlib.org/api/pyplot_api.html#matplotlib.pyplot.hexbin>`__ for more.
+`matplotlib hexbin documentation <http://matplotlib.org/api/pyplot_api.html#matplotlib.pyplot.hexbin>`__ for more.
 
 .. _visualization.pie:
 
@@ -674,7 +685,7 @@ Pie plot
 
 .. versionadded:: 0.14
 
-You can create a pie plot with :meth:`DataFrame.plot` or :meth:`Series.plot` with ``kind='pie'``.
+You can create a pie plot with :meth:`DataFrame.plot.pie` or :meth:`Series.plot.pie`.
 If your data includes any ``NaN``, they will be automatically filled with 0.
 A ``ValueError`` will be raised if there are any negative values in your data.
 
@@ -686,10 +697,10 @@ A ``ValueError`` will be raised if there are any negative values in your data.
 
 .. ipython:: python
 
-   series = Series(3 * rand(4), index=['a', 'b', 'c', 'd'], name='series')
+   series = pd.Series(3 * np.random.rand(4), index=['a', 'b', 'c', 'd'], name='series')
 
    @savefig series_pie_plot.png
-   series.plot(kind='pie', figsize=(6, 6))
+   series.plot.pie(figsize=(6, 6))
 
 .. ipython:: python
    :suppress:
@@ -713,10 +724,10 @@ A legend will be drawn in each pie plots by default; specify ``legend=False`` to
 
 .. ipython:: python
 
-   df = DataFrame(3 * rand(4, 2), index=['a', 'b', 'c', 'd'], columns=['x', 'y'])
+   df = pd.DataFrame(3 * np.random.rand(4, 2), index=['a', 'b', 'c', 'd'], columns=['x', 'y'])
 
    @savefig df_pie_plot.png
-   df.plot(kind='pie', subplots=True, figsize=(8, 4))
+   df.plot.pie(subplots=True, figsize=(8, 4))
 
 .. ipython:: python
    :suppress:
@@ -743,8 +754,8 @@ Also, other keywords supported by :func:`matplotlib.pyplot.pie` can be used.
 .. ipython:: python
 
    @savefig series_pie_plot_options.png
-   series.plot(kind='pie', labels=['AA', 'BB', 'CC', 'DD'], colors=['r', 'g', 'b', 'c'],
-               autopct='%.2f', fontsize=20, figsize=(6, 6))
+   series.plot.pie(labels=['AA', 'BB', 'CC', 'DD'], colors=['r', 'g', 'b', 'c'],
+                   autopct='%.2f', fontsize=20, figsize=(6, 6))
 
 If you pass values whose sum total is less than 1.0, matplotlib draws a semicircle.
 
@@ -756,12 +767,12 @@ If you pass values whose sum total is less than 1.0, matplotlib draws a semicirc
 
 .. ipython:: python
 
-   series = Series([0.1] * 4, index=['a', 'b', 'c', 'd'], name='series2')
+   series = pd.Series([0.1] * 4, index=['a', 'b', 'c', 'd'], name='series2')
 
    @savefig series_pie_plot_semi.png
-   series.plot(kind='pie', figsize=(6, 6))
+   series.plot.pie(figsize=(6, 6))
 
-See the `matplotlib pie documenation <http://matplotlib.org/api/pyplot_api.html#matplotlib.pyplot.pie>`__ for more.
+See the `matplotlib pie documentation <http://matplotlib.org/api/pyplot_api.html#matplotlib.pyplot.pie>`__ for more.
 
 .. ipython:: python
     :suppress:
@@ -832,7 +843,7 @@ You can create a scatter plot matrix using the
 .. ipython:: python
 
    from pandas.tools.plotting import scatter_matrix
-   df = DataFrame(randn(1000, 4), columns=['a', 'b', 'c', 'd'])
+   df = pd.DataFrame(np.random.randn(1000, 4), columns=['a', 'b', 'c', 'd'])
 
    @savefig scatter_matrix_kde.png
    scatter_matrix(df, alpha=0.2, figsize=(6, 6), diagonal='kde')
@@ -849,8 +860,7 @@ Density Plot
 
 .. versionadded:: 0.8.0
 
-You can create density plots using the Series/DataFrame.plot and
-setting ``kind='kde'``:
+You can create density plots using the :meth:`Series.plot.kde` and :meth:`DataFrame.plot.kde` methods.
 
 .. ipython:: python
    :suppress:
@@ -860,10 +870,10 @@ setting ``kind='kde'``:
 
 .. ipython:: python
 
-   ser = Series(randn(1000))
+   ser = pd.Series(np.random.randn(1000))
 
    @savefig kde_plot.png
-   ser.plot(kind='kde')
+   ser.plot.kde()
 
 .. ipython:: python
    :suppress:
@@ -885,10 +895,9 @@ of the same class will usually be closer together and form larger structures.
 
 .. ipython:: python
 
-   from pandas import read_csv
    from pandas.tools.plotting import andrews_curves
 
-   data = read_csv('data/iris.data')
+   data = pd.read_csv('data/iris.data')
 
    plt.figure()
 
@@ -908,10 +917,9 @@ represents one data point. Points that tend to cluster will appear closer togeth
 
 .. ipython:: python
 
-   from pandas import read_csv
    from pandas.tools.plotting import parallel_coordinates
 
-   data = read_csv('data/iris.data')
+   data = pd.read_csv('data/iris.data')
 
    plt.figure()
 
@@ -943,8 +951,8 @@ implies that the underlying data are not random.
 
    plt.figure()
 
-   data = Series(0.1 * rand(1000) +
-      0.9 * np.sin(np.linspace(-99 * np.pi, 99 * np.pi, num=1000)))
+   data = pd.Series(0.1 * np.random.rand(1000) +
+       0.9 * np.sin(np.linspace(-99 * np.pi, 99 * np.pi, num=1000)))
 
    @savefig lag_plot.png
    lag_plot(data)
@@ -978,7 +986,7 @@ confidence band.
 
    plt.figure()
 
-   data = Series(0.7 * rand(1000) +
+   data = pd.Series(0.7 * np.random.rand(1000) +
       0.3 * np.sin(np.linspace(-9 * np.pi, 9 * np.pi, num=1000)))
 
    @savefig autocorrelation_plot.png
@@ -1009,7 +1017,7 @@ are what constitutes the bootstrap plot.
 
    from pandas.tools.plotting import bootstrap_plot
 
-   data = Series(rand(1000))
+   data = pd.Series(np.random.rand(1000))
 
    @savefig bootstrap_plot.png
    bootstrap_plot(data, size=50, samples=500, color='grey')
@@ -1039,10 +1047,9 @@ be colored differently.
 
 .. ipython:: python
 
-   from pandas import read_csv
    from pandas.tools.plotting import radviz
 
-   data = read_csv('data/iris.data')
+   data = pd.read_csv('data/iris.data')
 
    plt.figure()
 
@@ -1092,7 +1099,7 @@ shown by default.
 
 .. ipython:: python
 
-   df = DataFrame(randn(1000, 4), index=ts.index, columns=list('ABCD'))
+   df = pd.DataFrame(np.random.randn(1000, 4), index=ts.index, columns=list('ABCD'))
    df = df.cumsum()
 
    @savefig frame_plot_basic_noleg.png
@@ -1116,7 +1123,7 @@ You may pass ``logy`` to get a log-scale Y axis.
 
 .. ipython:: python
 
-   ts = Series(randn(1000), index=date_range('1/1/2000', periods=1000))
+   ts = pd.Series(np.random.randn(1000), index=pd.date_range('1/1/2000', periods=1000))
    ts = np.exp(ts.cumsum())
 
    @savefig series_plot_logy.png
@@ -1224,8 +1231,6 @@ in ``pandas.plot_params`` can be used in a `with statement`:
 
 .. ipython:: python
 
-   import pandas as pd
-
    plt.figure()
 
    @savefig ser_plot_suppress_context.png
@@ -1255,7 +1260,7 @@ with the ``subplots`` keyword:
 
    plt.close('all')
 
-Using Layout and Targetting Multiple Axes
+Using Layout and Targeting Multiple Axes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The layout of subplots can be specified by ``layout`` keyword. It can accept
@@ -1271,7 +1276,7 @@ or columns needed, given the other.
 .. ipython:: python
 
    @savefig frame_plot_subplots_layout.png
-   df.plot(subplots=True, layout=(3, 2), figsize=(6, 6), sharex=False);
+   df.plot(subplots=True, layout=(2, 3), figsize=(6, 6), sharex=False);
 
 .. ipython:: python
    :suppress:
@@ -1282,22 +1287,23 @@ The above example is identical to using
 
 .. ipython:: python
 
-   df.plot(subplots=True, layout=(3, -1), figsize=(6, 6), sharex=False);
+   df.plot(subplots=True, layout=(2, -1), figsize=(6, 6), sharex=False);
 
 .. ipython:: python
    :suppress:
 
    plt.close('all')
 
-The required number of columns (2) is inferred from the number of series to plot
-and the given number of rows (3).
+The required number of columns (3) is inferred from the number of series to plot
+and the given number of rows (2).
 
 Also, you can pass multiple axes created beforehand as list-like via ``ax`` keyword.
 This allows to use more complicated layout.
 The passed axes must be the same number as the subplots being drawn.
 
-When multiple axes are passed via ``ax`` keyword, ``layout``, ``sharex`` and ``sharey`` keywords are ignored.
-These must be configured when creating axes.
+When multiple axes are passed via ``ax`` keyword, ``layout``, ``sharex`` and ``sharey`` keywords
+don't affect to the output. You should explicitly pass ``sharex=False`` and ``sharey=False``,
+otherwise you will see a warning.
 
 .. ipython:: python
 
@@ -1306,9 +1312,9 @@ These must be configured when creating axes.
    target1 = [axes[0][0], axes[1][1], axes[2][2], axes[3][3]]
    target2 = [axes[3][0], axes[2][1], axes[1][2], axes[0][3]]
 
-   df.plot(subplots=True, ax=target1, legend=False);
+   df.plot(subplots=True, ax=target1, legend=False, sharex=False, sharey=False);
    @savefig frame_plot_subplots_multi_ax.png
-   (-df).plot(subplots=True, ax=target2, legend=False);
+   (-df).plot(subplots=True, ax=target2, legend=False, sharex=False, sharey=False);
 
 .. ipython:: python
    :suppress:
@@ -1321,10 +1327,10 @@ Another option is passing an ``ax`` argument to :meth:`Series.plot` to plot on a
    :suppress:
 
    np.random.seed(123456)
-   ts = Series(randn(1000), index=date_range('1/1/2000', periods=1000))
+   ts = pd.Series(np.random.randn(1000), index=pd.date_range('1/1/2000', periods=1000))
    ts = ts.cumsum()
 
-   df = DataFrame(randn(1000, 4), index=ts.index, columns=list('ABCD'))
+   df = pd.DataFrame(np.random.randn(1000, 4), index=ts.index, columns=list('ABCD'))
    df = df.cumsum()
 
 .. ipython:: python
@@ -1382,7 +1388,7 @@ Here is an example of one way to easily plot group means with standard deviation
    # Plot
    fig, ax = plt.subplots()
    @savefig errorbar_example.png
-   means.plot(yerr=errors, ax=ax, kind='bar')
+   means.plot.bar(yerr=errors, ax=ax)
 
 .. ipython:: python
    :suppress:
@@ -1406,7 +1412,7 @@ Plotting with matplotlib table is now supported in  :meth:`DataFrame.plot` and :
 .. ipython:: python
 
    fig, ax = plt.subplots(1, 1)
-   df = DataFrame(rand(5, 3), columns=['a', 'b', 'c'])
+   df = pd.DataFrame(np.random.rand(5, 3), columns=['a', 'b', 'c'])
    ax.get_xaxis().set_visible(False)   # Hide Ticks
 
    @savefig line_plot_table_true.png
@@ -1449,7 +1455,7 @@ Finally, there is a helper function ``pandas.tools.plotting.table`` to create a 
 
    plt.close('all')
 
-**Note**: You can get table instances on the axes using ``axes.tables`` property for further decorations. See the `matplotlib table documenation <http://matplotlib.org/api/axes_api.html#matplotlib.axes.Axes.table>`__ for more.
+**Note**: You can get table instances on the axes using ``axes.tables`` property for further decorations. See the `matplotlib table documentation <http://matplotlib.org/api/axes_api.html#matplotlib.axes.Axes.table>`__ for more.
 
 .. _visualization.colormaps:
 
@@ -1478,7 +1484,7 @@ To use the cubehelix colormap, we can simply pass ``'cubehelix'`` to ``colormap=
 
 .. ipython:: python
 
-   df = DataFrame(randn(1000, 10), index=ts.index)
+   df = pd.DataFrame(np.random.randn(1000, 10), index=ts.index)
    df = df.cumsum()
 
    plt.figure()
@@ -1516,13 +1522,13 @@ Colormaps can also be used other plot types, like bar charts:
 
 .. ipython:: python
 
-   dd = DataFrame(randn(10, 10)).applymap(abs)
+   dd = pd.DataFrame(np.random.randn(10, 10)).applymap(abs)
    dd = dd.cumsum()
 
    plt.figure()
 
    @savefig greens.png
-   dd.plot(kind='bar', colormap='Greens')
+   dd.plot.bar(colormap='Greens')
 
 .. ipython:: python
    :suppress:
@@ -1583,10 +1589,10 @@ when plotting a large number of points.
 
 .. ipython:: python
 
-   price = Series(randn(150).cumsum(),
-                  index=date_range('2000-1-1', periods=150, freq='B'))
-   ma = pd.rolling_mean(price, 20)
-   mstd = pd.rolling_std(price, 20)
+   price = pd.Series(np.random.randn(150).cumsum(),
+                     index=pd.date_range('2000-1-1', periods=150, freq='B'))
+   ma = price.rolling(20).mean()
+   mstd = price.rolling(20).std()
 
    plt.figure()
 
@@ -1607,49 +1613,54 @@ when plotting a large number of points.
 Trellis plotting interface
 --------------------------
 
+.. warning::
+
+    The ``rplot`` trellis plotting interface is **deprecated and will be removed
+    in a future version**. We refer to external packages like
+    `seaborn <https://github.com/mwaskom/seaborn>`_ for similar but more
+    refined functionality.
+
+    The docs below include some example on how to convert your existing code to
+    ``seaborn``.
+
 .. ipython:: python
    :suppress:
 
-   import numpy as np
-   np.random.seed(123456)
-   from pandas import *
-   options.display.max_rows=15
-   import pandas.util.testing as tm
-   randn = np.random.randn
-   np.set_printoptions(precision=4, suppress=True)
-   import matplotlib.pyplot as plt
-   tips_data = read_csv('data/tips.csv')
-   iris_data = read_csv('data/iris.data')
-   from pandas import read_csv
-   from pandas.tools.plotting import radviz
-   import pandas.tools.rplot as rplot
+   tips_data = pd.read_csv('data/tips.csv')
+   iris_data = pd.read_csv('data/iris.data')
    plt.close('all')
 
 
 .. note::
 
    The tips data set can be downloaded `here
-   <http://wesmckinney.com/files/tips.csv>`__. Once you download it execute
+   <https://raw.github.com/pydata/pandas/master/pandas/tests/data/tips.csv>`__. Once you download it execute
 
    .. code-block:: python
 
-      from pandas import read_csv
-      tips_data = read_csv('tips.csv')
+      tips_data = pd.read_csv('tips.csv')
 
    from the directory where you downloaded the file.
 
 We import the rplot API:
 
 .. ipython:: python
+   :okwarning:
 
    import pandas.tools.rplot as rplot
 
 Examples
 ~~~~~~~~
 
-RPlot is a flexible API for producing Trellis plots. These plots allow you to arrange data in a rectangular grid by values of certain attributes.
+RPlot was an API for producing Trellis plots. These plots allow you to
+arrange data in a rectangular grid by values of certain attributes.
+In the example below, data from the tips data set is arranged by the attributes
+'sex' and 'smoker'. Since both of those attributes can take on one of two
+values, the resulting grid has two columns and two rows. A histogram is
+displayed for each cell of the grid.
 
 .. ipython:: python
+   :okwarning:
 
    plt.figure()
 
@@ -1665,9 +1676,23 @@ RPlot is a flexible API for producing Trellis plots. These plots allow you to ar
 
    plt.close('all')
 
-In the example above, data from the tips data set is arranged by the attributes 'sex' and 'smoker'. Since both of those attributes can take on one of two values, the resulting grid has two columns and two rows. A histogram is displayed for each cell of the grid.
+A similar plot can be made with ``seaborn`` using the ``FacetGrid`` object,
+resulting in the following image:
+
+.. code-block:: python
+
+    import seaborn as sns
+    g = sns.FacetGrid(tips_data, row="sex", col="smoker")
+    g.map(plt.hist, "total_bill")
+
+.. image:: _static/rplot-seaborn-example1.png
+
+
+Example below is the same as previous except the plot is set to kernel density
+estimation. A ``seaborn`` example is included beneath.
 
 .. ipython:: python
+   :okwarning:
 
    plt.figure()
 
@@ -1683,9 +1708,18 @@ In the example above, data from the tips data set is arranged by the attributes 
 
    plt.close('all')
 
-Example above is the same as previous except the plot is set to kernel density estimation. This shows how easy it is to have different plots for the same Trellis structure.
+.. code-block:: python
+
+    g = sns.FacetGrid(tips_data, row="sex", col="smoker")
+    g.map(sns.kdeplot, "total_bill")
+
+.. image:: _static/rplot-seaborn-example2.png
+
+The plot below shows that it is possible to have two or more plots for the same
+data displayed on the same Trellis grid cell.
 
 .. ipython:: python
+   :okwarning:
 
    plt.figure()
 
@@ -1702,9 +1736,30 @@ Example above is the same as previous except the plot is set to kernel density e
 
    plt.close('all')
 
-The plot above shows that it is possible to have two or more plots for the same data displayed on the same Trellis grid cell.
+A seaborn equivalent for a simple scatter plot:
+
+.. code-block:: python
+
+    g = sns.FacetGrid(tips_data, row="sex", col="smoker")
+    g.map(plt.scatter, "total_bill", "tip")
+
+.. image:: _static/rplot-seaborn-example3.png
+
+and with a regression line, using the dedicated ``seaborn`` ``regplot`` function:
+
+.. code-block:: python
+
+    g = sns.FacetGrid(tips_data, row="sex", col="smoker", margin_titles=True)
+    g.map(sns.regplot, "total_bill", "tip", order=2)
+
+.. image:: _static/rplot-seaborn-example3b.png
+
+
+Below is a similar plot but with 2D kernel density estimation plot superimposed,
+followed by a ``seaborn`` equivalent:
 
 .. ipython:: python
+   :okwarning:
 
    plt.figure()
 
@@ -1721,9 +1776,20 @@ The plot above shows that it is possible to have two or more plots for the same 
 
    plt.close('all')
 
-Above is a similar plot but with 2D kernel density estimation plot superimposed.
+.. code-block:: python
+
+    g = sns.FacetGrid(tips_data, row="sex", col="smoker")
+    g.map(plt.scatter, "total_bill", "tip")
+    g.map(sns.kdeplot, "total_bill", "tip")
+
+.. image:: _static/rplot-seaborn-example4.png
+
+It is possible to only use one attribute for grouping data. The example above
+only uses 'sex' attribute. If the second grouping attribute is not specified,
+the plots will be arranged in a column.
 
 .. ipython:: python
+   :okwarning:
 
    plt.figure()
 
@@ -1739,9 +1805,10 @@ Above is a similar plot but with 2D kernel density estimation plot superimposed.
 
    plt.close('all')
 
-It is possible to only use one attribute for grouping data. The example above only uses 'sex' attribute. If the second grouping attribute is not specified, the plots will be arranged in a column.
+If the first grouping attribute is not specified the plots will be arranged in a row.
 
 .. ipython:: python
+   :okwarning:
 
    plt.figure()
 
@@ -1757,15 +1824,18 @@ It is possible to only use one attribute for grouping data. The example above on
 
    plt.close('all')
 
-If the first grouping attribute is not specified the plots will be arranged in a row.
+In ``seaborn``, this can also be done by only specifying one of the ``row``
+and ``col`` arguments.
+
+In the example below the colour and shape of the scatter plot graphical
+objects is mapped to 'day' and 'size' attributes respectively. You use
+scale objects to specify these mappings. The list of scale classes is
+given below with initialization arguments for quick reference.
 
 .. ipython:: python
+   :okwarning:
 
    plt.figure()
-
-   plot = rplot.RPlot(tips_data, x='total_bill', y='tip')
-   plot.add(rplot.TrellisGrid(['.', 'smoker']))
-   plot.add(rplot.GeomHistogram())
 
    plot = rplot.RPlot(tips_data, x='tip', y='total_bill')
    plot.add(rplot.TrellisGrid(['sex', 'smoker']))
@@ -1779,38 +1849,12 @@ If the first grouping attribute is not specified the plots will be arranged in a
 
    plt.close('all')
 
-As shown above, scatter plots are also possible. Scatter plots allow you to map various data attributes to graphical properties of the plot. In the example above the colour and shape of the scatter plot graphical objects is mapped to 'day' and 'size' attributes respectively. You use scale objects to specify these mappings. The list of scale classes is given below with initialization arguments for quick reference.
+This can also be done in ``seaborn``, at least for 3 variables:
 
+.. code-block:: python
 
-Scales
-~~~~~~
+    g = sns.FacetGrid(tips_data, row="sex", col="smoker", hue="day")
+    g.map(plt.scatter, "tip", "total_bill")
+    g.add_legend()
 
-::
-
-   ScaleGradient(column, colour1, colour2)
-
-This one allows you to map an attribute (specified by parameter column) value to the colour of a graphical object. The larger the value of the attribute the closer the colour will be to colour2, the smaller the value, the closer it will be to colour1.
-
-::
-
-   ScaleGradient2(column, colour1, colour2, colour3)
-
-The same as ScaleGradient but interpolates linearly between three colours instead of two.
-
-::
-
-   ScaleSize(column, min_size, max_size, transform)
-
-Map attribute value to size of the graphical object. Parameter min_size (default 5.0) is the minimum size of the graphical object, max_size (default 100.0) is the maximum size and transform is a one argument function that will be used to transform the attribute value (defaults to lambda x: x).
-
-::
-
-   ScaleShape(column)
-
-Map the shape of the object to attribute value. The attribute has to be categorical.
-
-::
-
-   ScaleRandomColour(column)
-
-Assign a random colour to a value of categorical attribute specified by column.
+.. image:: _static/rplot-seaborn-example6.png

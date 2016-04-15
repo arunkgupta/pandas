@@ -52,7 +52,7 @@ extensions = ['sphinx.ext.autodoc',
 
 
 with open("index.rst") as f:
-    lines = f.readlines()
+    index_rst_lines = f.readlines()
 
 # only include the slow autosummary feature if we're building the API section
 # of the docs
@@ -60,20 +60,21 @@ with open("index.rst") as f:
 # JP: added from sphinxdocs
 autosummary_generate = False
 
-if any([re.match("\s*api\s*",l) for l in lines]):
+if any([re.match("\s*api\s*",l) for l in index_rst_lines]):
     autosummary_generate = True
 
-ds = []
+files_to_delete = []
 for f in os.listdir(os.path.dirname(__file__)):
-    if (not f.endswith(('.rst'))) or (f.startswith('.')) or os.path.basename(f) == 'index.rst':
+    if not f.endswith('.rst') or f.startswith('.') or os.path.basename(f) == 'index.rst':
         continue
 
-    _f = f.split('.rst')[0]
-    if not any([re.match("\s*%s\s*$" % _f,l) for l in lines]):
-        ds.append(f)
+    _file_basename = f.split('.rst')[0]
+    _regex_to_match = "\s*{}\s*$".format(_file_basename)
+    if not any([re.match(_regex_to_match, line) for line in index_rst_lines]):
+        files_to_delete.append(f)
 
-if ds:
-    print("I'm about to DELETE the following:\n%s\n" % list(sorted(ds)))
+if files_to_delete:
+    print("I'm about to DELETE the following:\n%s\n" % list(sorted(files_to_delete)))
     sys.stdout.write("WARNING: I'd like to delete those to speed up processing (yes/no)? ")
     if PY3:
         answer = input()
@@ -81,7 +82,7 @@ if ds:
         answer = raw_input()
 
     if answer.lower().strip() in ('y','yes'):
-        for f in ds:
+        for f in files_to_delete:
             f = os.path.join(os.path.join(os.path.dirname(__file__),f))
             f= os.path.abspath(f)
             try:
@@ -211,7 +212,21 @@ html_static_path = ['_static']
 
 # Additional templates that should be rendered to pages, maps page names to
 # template names.
-# html_additional_pages = {}
+
+# Add redirect for previously existing API pages (which are now included in
+# the API pages as top-level functions) based on a template (GH9911)
+moved_api_pages = [
+    'pandas.core.common.isnull', 'pandas.core.common.notnull', 'pandas.core.reshape.get_dummies',
+    'pandas.tools.merge.concat', 'pandas.tools.merge.merge', 'pandas.tools.pivot.pivot_table',
+    'pandas.tseries.tools.to_datetime', 'pandas.io.clipboard.read_clipboard', 'pandas.io.excel.ExcelFile.parse',
+    'pandas.io.excel.read_excel', 'pandas.io.html.read_html', 'pandas.io.json.read_json',
+    'pandas.io.parsers.read_csv', 'pandas.io.parsers.read_fwf', 'pandas.io.parsers.read_table',
+    'pandas.io.pickle.read_pickle', 'pandas.io.pytables.HDFStore.append', 'pandas.io.pytables.HDFStore.get',
+    'pandas.io.pytables.HDFStore.put', 'pandas.io.pytables.HDFStore.select', 'pandas.io.pytables.read_hdf',
+    'pandas.io.sql.read_sql', 'pandas.io.sql.read_frame', 'pandas.io.sql.write_frame',
+    'pandas.io.stata.read_stata']
+
+html_additional_pages = {'generated/' + page: 'api_redirect.html' for page in moved_api_pages}
 
 # If false, no module index is generated.
 html_use_modindex = True
@@ -275,8 +290,10 @@ latex_documents = [
 intersphinx_mapping = {
     'statsmodels': ('http://statsmodels.sourceforge.net/devel/', None),
     'matplotlib': ('http://matplotlib.org/', None),
-    'python': ('http://docs.python.org/', None),
-    'numpy': ('http://docs.scipy.org/doc/numpy', None)
+    'python': ('http://docs.python.org/3', None),
+    'numpy': ('http://docs.scipy.org/doc/numpy', None),
+    'scipy': ('http://docs.scipy.org/doc/scipy', None),
+    'py': ('http://pylib.readthedocs.org/en/latest/', None)
 }
 import glob
 autosummary_generate = glob.glob("*.rst")
@@ -297,6 +314,112 @@ ipython_exec_lines = [
     'pd.options.display.encoding="utf8"'
     ]
 
+
+# Add custom Documenter to handle attributes/methods of an AccessorProperty
+# eg pandas.Series.str and pandas.Series.dt (see GH9322)
+
+from sphinx.util import rpartition
+from sphinx.ext.autodoc import Documenter, MethodDocumenter, AttributeDocumenter
+from sphinx.ext.autosummary import Autosummary
+
+
+class AccessorLevelDocumenter(Documenter):
+    """
+    Specialized Documenter subclass for objects on accessor level (methods,
+    attributes).
+    """
+
+    # This is the simple straightforward version
+    # modname is None, base the last elements (eg 'hour')
+    # and path the part before (eg 'Series.dt')
+    # def resolve_name(self, modname, parents, path, base):
+    #     modname = 'pandas'
+    #     mod_cls = path.rstrip('.')
+    #     mod_cls = mod_cls.split('.')
+    #
+    #     return modname, mod_cls + [base]
+
+    def resolve_name(self, modname, parents, path, base):
+        if modname is None:
+            if path:
+                mod_cls = path.rstrip('.')
+            else:
+                mod_cls = None
+                # if documenting a class-level object without path,
+                # there must be a current class, either from a parent
+                # auto directive ...
+                mod_cls = self.env.temp_data.get('autodoc:class')
+                # ... or from a class directive
+                if mod_cls is None:
+                    mod_cls = self.env.temp_data.get('py:class')
+                # ... if still None, there's no way to know
+                if mod_cls is None:
+                    return None, []
+            # HACK: this is added in comparison to ClassLevelDocumenter
+            # mod_cls still exists of class.accessor, so an extra
+            # rpartition is needed
+            modname, accessor = rpartition(mod_cls, '.')
+            modname, cls = rpartition(modname, '.')
+            parents = [cls, accessor]
+            # if the module name is still missing, get it like above
+            if not modname:
+                modname = self.env.temp_data.get('autodoc:module')
+            if not modname:
+                modname = self.env.temp_data.get('py:module')
+            # ... else, it stays None, which means invalid
+        return modname, parents + [base]
+
+
+class AccessorAttributeDocumenter(AccessorLevelDocumenter, AttributeDocumenter):
+
+    objtype = 'accessorattribute'
+    directivetype = 'attribute'
+
+
+class AccessorMethodDocumenter(AccessorLevelDocumenter, MethodDocumenter):
+
+    objtype = 'accessormethod'
+    directivetype = 'method'
+
+
+class AccessorCallableDocumenter(AccessorLevelDocumenter, MethodDocumenter):
+    """
+    This documenter lets us removes .__call__ from the method signature for
+    callable accessors like Series.plot
+    """
+    objtype = 'accessorcallable'
+    directivetype = 'method'
+
+    # lower than MethodDocumenter; otherwise the doc build prints warnings
+    priority = 0.5
+
+    def format_name(self):
+        return MethodDocumenter.format_name(self).rstrip('.__call__')
+
+
+class PandasAutosummary(Autosummary):
+    """
+    This alternative autosummary class lets us override the table summary for
+    Series.plot and DataFrame.plot in the API docs.
+    """
+
+    def _replace_pandas_items(self, display_name, sig, summary, real_name):
+        # this a hack: ideally we should extract the signature from the
+        # .__call__ method instead of hard coding this
+        if display_name == 'DataFrame.plot':
+            sig = '([x, y, kind, ax, ....])'
+            summary = 'DataFrame plotting accessor and method'
+        elif display_name == 'Series.plot':
+            sig = '([kind, ax, figsize, ....])'
+            summary = 'Series plotting accessor and method'
+        return (display_name, sig, summary, real_name)
+
+    def get_items(self, names):
+        items = Autosummary.get_items(self, names)
+        items = [self._replace_pandas_items(*item) for item in items]
+        return items
+
+
 # remove the docstring of the flags attribute (inherited from numpy ndarray)
 # because these give doc build errors (see GH issue 5331)
 def remove_flags_docstring(app, what, name, obj, options, lines):
@@ -305,3 +428,7 @@ def remove_flags_docstring(app, what, name, obj, options, lines):
 
 def setup(app):
     app.connect("autodoc-process-docstring", remove_flags_docstring)
+    app.add_autodocumenter(AccessorAttributeDocumenter)
+    app.add_autodocumenter(AccessorMethodDocumenter)
+    app.add_autodocumenter(AccessorCallableDocumenter)
+    app.add_directive('autosummary', PandasAutosummary)

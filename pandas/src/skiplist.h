@@ -18,17 +18,17 @@
 
 #ifndef PANDAS_INLINE
   #if defined(__GNUC__)
-    #define PANDAS_INLINE __inline__
+    #define PANDAS_INLINE static __inline__
   #elif defined(_MSC_VER)
-    #define PANDAS_INLINE __inline
+    #define PANDAS_INLINE static __inline
   #elif defined (__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-    #define PANDAS_INLINE inline
+    #define PANDAS_INLINE static inline
   #else
     #define PANDAS_INLINE
   #endif
 #endif
 
-PANDAS_INLINE static float __skiplist_nanf(void)
+PANDAS_INLINE float __skiplist_nanf(void)
 {
     const union { int __i; float __f;} __bint = {0x7fc00000UL};
     return __bint.__f;
@@ -36,65 +36,70 @@ PANDAS_INLINE static float __skiplist_nanf(void)
 #define PANDAS_NAN ((double) __skiplist_nanf())
 
 
-static PANDAS_INLINE double Log2(double val) {
+PANDAS_INLINE double Log2(double val) {
   return log(val) / log(2.);
 }
 
 typedef struct node_t node_t;
 
 struct node_t {
+  node_t **next;
+  int *width;
   double value;
   int is_nil;
   int levels;
-  node_t **next;
-  int *width;
   int ref_count;
 };
 
 typedef struct {
   node_t *head;
-  int size, maxlevels;
   node_t **tmp_chain;
   int *tmp_steps;
+  int size;
+  int maxlevels;
 } skiplist_t;
 
-static PANDAS_INLINE double urand(void) {
-  return rand() / ((double) RAND_MAX + 1);
+PANDAS_INLINE double urand(void) {
+  return ((double) rand() + 1) / ((double) RAND_MAX + 2);
 }
 
-static PANDAS_INLINE int int_min(int a, int b) {
+PANDAS_INLINE int int_min(int a, int b) {
   return a < b ? a : b;
 }
 
-static PANDAS_INLINE node_t *node_init(double value, int levels) {
+PANDAS_INLINE node_t *node_init(double value, int levels) {
   node_t *result;
-  result = (node_t*) calloc(1, sizeof(node_t));
-
-  result->value = value;
-  result->levels = levels;
-  result->is_nil = 0;
-  result->ref_count = 0;
-
-  result->next = (node_t**) malloc(levels * sizeof(node_t*));
-  result->width = (int*) malloc(levels * sizeof(int));
-
+  result = (node_t*) malloc(sizeof(node_t));
+  if (result) {
+      result->value = value;
+      result->levels = levels;
+      result->is_nil = 0;
+      result->ref_count = 0;
+      result->next = (node_t**) malloc(levels * sizeof(node_t*));
+      result->width = (int*) malloc(levels * sizeof(int));
+      if (!(result->next && result->width) && (levels != 0)) {
+        free(result->next);
+        free(result->width);
+        free(result);
+        return NULL;
+      }
+  }
   return result;
 }
 
 // do this ourselves
-
-static PANDAS_INLINE void node_incref(node_t *node) {
-  node->ref_count += 1;
+PANDAS_INLINE void node_incref(node_t *node) {
+  ++(node->ref_count);
 }
 
-static PANDAS_INLINE void node_decref(node_t *node) {
-  node->ref_count -= 1;
+PANDAS_INLINE void node_decref(node_t *node) {
+  --(node->ref_count);
 }
 
 static void node_destroy(node_t *node) {
   int i;
   if (node) {
-    if (node->ref_count == 1) {
+    if (node->ref_count <= 1) {
       for (i = 0; i < node->levels; ++i) {
         node_destroy(node->next[i]);
       }
@@ -110,21 +115,41 @@ static void node_destroy(node_t *node) {
   }
 }
 
-static PANDAS_INLINE skiplist_t *skiplist_init(int expected_size) {
+PANDAS_INLINE void skiplist_destroy(skiplist_t *skp) {
+  if (skp) {
+    node_destroy(skp->head);
+    free(skp->tmp_steps);
+    free(skp->tmp_chain);
+    free(skp);
+  }
+}
+
+PANDAS_INLINE skiplist_t *skiplist_init(int expected_size) {
   skiplist_t *result;
   node_t *NIL, *head;
   int maxlevels, i;
 
-  maxlevels = Log2((double) expected_size);
-  result = (skiplist_t*) calloc(1, sizeof(skiplist_t));
+  maxlevels = 1 + Log2((double) expected_size);
+  result = (skiplist_t*) malloc(sizeof(skiplist_t));
+  if (!result) {
+    return NULL;
+  }
   result->tmp_chain = (node_t**) malloc(maxlevels * sizeof(node_t*));
   result->tmp_steps = (int*) malloc(maxlevels * sizeof(int));
   result->maxlevels = maxlevels;
+  result->size = 0;
 
   head = result->head = node_init(PANDAS_NAN, maxlevels);
+  NIL = node_init(0.0, 0);
+
+  if (!(result->tmp_chain && result->tmp_steps && result->head && NIL)) {
+    skiplist_destroy(result);
+    node_destroy(NIL);
+    return NULL;
+  }
+
   node_incref(head);
 
-  NIL = node_init(0, 0);
   NIL->is_nil = 1;
 
   for (i = 0; i < maxlevels; ++i)
@@ -137,19 +162,8 @@ static PANDAS_INLINE skiplist_t *skiplist_init(int expected_size) {
   return result;
 }
 
-static PANDAS_INLINE void skiplist_destroy(skiplist_t *skp) {
-  if (skp) {
-    node_destroy(skp->head);
-    free(skp->tmp_steps);
-    free(skp->tmp_chain);
-    free(skp);
-  }
-}
-
-
 // 1 if left < right, 0 if left == right, -1 if left > right
-
-static PANDAS_INLINE int _node_cmp(node_t* node, double value){
+PANDAS_INLINE int _node_cmp(node_t* node, double value){
   if (node->is_nil || node->value > value) {
     return -1;
   }
@@ -161,7 +175,7 @@ static PANDAS_INLINE int _node_cmp(node_t* node, double value){
   }
 }
 
-static PANDAS_INLINE double skiplist_get(skiplist_t *skp, int i, int *ret) {
+PANDAS_INLINE double skiplist_get(skiplist_t *skp, int i, int *ret) {
   node_t *node;
   int level;
 
@@ -171,12 +185,12 @@ static PANDAS_INLINE double skiplist_get(skiplist_t *skp, int i, int *ret) {
   }
 
   node = skp->head;
-  i++;
+  ++i;
   for (level = skp->maxlevels - 1; level >= 0; --level)
   {
     while (node->width[level] <= i)
     {
-      i = i - node->width[level];
+      i -= node->width[level];
       node = node->next[level];
     }
   }
@@ -185,7 +199,7 @@ static PANDAS_INLINE double skiplist_get(skiplist_t *skp, int i, int *ret) {
   return node->value;
 }
 
-static PANDAS_INLINE int skiplist_insert(skiplist_t *skp, double value) {
+PANDAS_INLINE int skiplist_insert(skiplist_t *skp, double value) {
   node_t *node, *prevnode, *newnode, *next_at_level;
   int *steps_at_level;
   int size, steps, level;
@@ -212,6 +226,9 @@ static PANDAS_INLINE int skiplist_insert(skiplist_t *skp, double value) {
   size = int_min(skp->maxlevels, 1 - ((int) Log2(urand())));
 
   newnode = node_init(value, size);
+  if (!newnode) {
+    return -1;
+  }
   steps = 0;
 
   for (level = 0; level < size; ++level) {
@@ -231,12 +248,12 @@ static PANDAS_INLINE int skiplist_insert(skiplist_t *skp, double value) {
     chain[level]->width[level] += 1;
   }
 
-  skp->size++;
+  ++(skp->size);
 
   return 1;
 }
 
-static PANDAS_INLINE int skiplist_remove(skiplist_t *skp, double value) {
+PANDAS_INLINE int skiplist_remove(skiplist_t *skp, double value) {
   int level, size;
   node_t *node, *prevnode, *tmpnode, *next_at_level;
   node_t **chain;
@@ -273,9 +290,9 @@ static PANDAS_INLINE int skiplist_remove(skiplist_t *skp, double value) {
   }
 
   for (level = size; level < skp->maxlevels; ++level) {
-    chain[level]->width[level] -= 1;
+    --(chain[level]->width[level]);
   }
 
-  skp->size--;
+  --(skp->size);
   return 1;
 }

@@ -1,9 +1,9 @@
-import operator
-import warnings
+import numpy as np
+import pandas.lib as lib
+
+import pandas as pd
 from pandas.compat import reduce
 from pandas.core.index import Index
-import numpy as np
-from pandas import algos
 from pandas.core import common as com
 
 
@@ -36,7 +36,7 @@ def cartesian_product(X):
 
     return [np.tile(np.repeat(np.asarray(com._values_from_object(x)), b[i]),
                     np.product(a[i]))
-               for i, x in enumerate(X)]
+            for i, x in enumerate(X)]
 
 
 def _compose2(f, g):
@@ -49,21 +49,58 @@ def compose(*funcs):
     assert len(funcs) > 1, 'At least 2 callables must be passed to compose'
     return reduce(_compose2, funcs)
 
-### FIXME: remove in 0.16
-def value_range(df):
+
+def to_numeric(arg, errors='raise'):
     """
-    Return the minimum and maximum of a dataframe in a series object
+    Convert argument to a numeric type.
 
     Parameters
     ----------
-    df : DataFrame
+    arg : list, tuple, 1-d array, or Series
+    errors : {'ignore', 'raise', 'coerce'}, default 'raise'
+        - If 'raise', then invalid parsing will raise an exception
+        - If 'coerce', then invalid parsing will be set as NaN
+        - If 'ignore', then invalid parsing will return the input
 
     Returns
     -------
-    (maximum, minimum) : Series
+    ret : numeric if parsing succeeded.
+        Return type depends on input.  Series if Series, otherwise ndarray
 
+    Examples
+    --------
+    Take separate series and convert to numeric, coercing when told to
+
+    >>> import pandas as pd
+    >>> s = pd.Series(['1.0', '2', -3])
+    >>> pd.to_numeric(s)
+    >>> s = pd.Series(['apple', '1.0', '2', -3])
+    >>> pd.to_numeric(s, errors='ignore')
+    >>> pd.to_numeric(s, errors='coerce')
     """
-    from pandas import Series
-    warnings.warn("value_range is deprecated. Use .describe() instead", FutureWarning)
 
-    return Series((min(df.min()), max(df.max())), ('Minimum', 'Maximum'))
+    index = name = None
+    if isinstance(arg, pd.Series):
+        index, name = arg.index, arg.name
+    elif isinstance(arg, (list, tuple)):
+        arg = np.array(arg, dtype='O')
+    elif getattr(arg, 'ndim', 1) > 1:
+        raise TypeError('arg must be a list, tuple, 1-d array, or Series')
+
+    conv = arg
+    arg = com._ensure_object(arg)
+
+    coerce_numeric = False if errors in ('ignore', 'raise') else True
+
+    try:
+        conv = lib.maybe_convert_numeric(arg,
+                                         set(),
+                                         coerce_numeric=coerce_numeric)
+    except:
+        if errors == 'raise':
+            raise
+
+    if index is not None:
+        return pd.Series(conv, index=index, name=name)
+    else:
+        return conv

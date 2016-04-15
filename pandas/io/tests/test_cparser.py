@@ -3,27 +3,18 @@ C/Cython ascii file parser tests
 """
 
 from pandas.compat import StringIO, BytesIO, map
-from datetime import datetime
 from pandas import compat
-import csv
 import os
 import sys
-import re
 
 import nose
 
 from numpy import nan
 import numpy as np
 
-from pandas import DataFrame, Series, Index, isnull, MultiIndex
-import pandas.io.parsers as parsers
-from pandas.io.parsers import (read_csv, read_table, read_fwf,
-                               TextParser, TextFileReader)
-from pandas.util.testing import (assert_almost_equal, assert_frame_equal,
-                                 assert_series_equal, network)
-import pandas.lib as lib
-from pandas import compat
-from pandas.lib import Timestamp
+from pandas import DataFrame
+from pandas.io.parsers import (read_csv, TextFileReader)
+from pandas.util.testing import assert_frame_equal
 
 import pandas.util.testing as tm
 
@@ -43,19 +34,19 @@ class TestCParser(tm.TestCase):
         try:
             f = open(self.csv1, 'rb')
             reader = TextReader(f)
-            result = reader.read()
+            result = reader.read()  # noqa
         finally:
             f.close()
 
     def test_string_filename(self):
         reader = TextReader(self.csv1, header=None)
-        result = reader.read()
+        reader.read()
 
     def test_file_handle_mmap(self):
         try:
             f = open(self.csv1, 'rb')
             reader = TextReader(f, memory_map=True, header=None)
-            result = reader.read()
+            reader.read()
         finally:
             f.close()
 
@@ -63,7 +54,7 @@ class TestCParser(tm.TestCase):
         text = open(self.csv1, 'rb').read()
         src = BytesIO(text)
         reader = TextReader(src, header=None)
-        result = reader.read()
+        reader.read()
 
     def test_string_factorize(self):
         # should this be optional?
@@ -136,11 +127,11 @@ class TestCParser(tm.TestCase):
         data = '123.456\n12.500'
 
         reader = TextFileReader(StringIO(data), delimiter=':',
-                            thousands='.', header=None)
+                                thousands='.', header=None)
         result = reader.read()
 
-        expected = [123456, 12500]
-        tm.assert_almost_equal(result[0], expected)
+        expected = DataFrame([123456, 12500])
+        tm.assert_frame_equal(result, expected)
 
     def test_skip_bad_lines(self):
         # too many lines, see #2430 for why
@@ -180,6 +171,31 @@ class TestCParser(tm.TestCase):
             sys.stderr = stderr
 
     def test_header_not_enough_lines(self):
+        data = ('skip this\n'
+                'skip this\n'
+                'a,b,c\n'
+                '1,2,3\n'
+                '4,5,6')
+
+        reader = TextReader(StringIO(data), delimiter=',', header=2)
+        header = reader.header
+        expected = [['a', 'b', 'c']]
+        self.assertEqual(header, expected)
+
+        recs = reader.read()
+        expected = {0: [1, 4], 1: [2, 5], 2: [3, 6]}
+        assert_array_dicts_equal(expected, recs)
+
+        # not enough rows
+        self.assertRaises(parser.CParserError, TextReader, StringIO(data),
+                          delimiter=',', header=5, as_recarray=True)
+
+    def test_header_not_enough_lines_as_recarray(self):
+
+        if compat.is_platform_windows():
+            raise nose.SkipTest(
+                "segfaults on win-64, only when all tests are run")
+
         data = ('skip this\n'
                 'skip this\n'
                 'a,b,c\n'
@@ -245,6 +261,22 @@ aaaaa,5"""
         ex_values = np.array(['a', 'aa', 'aaa', 'aaaa', 'aaaa'], dtype='S4')
         self.assertTrue((result[0] == ex_values).all())
         self.assertEqual(result[1].dtype, 'S4')
+
+    def test_numpy_string_dtype_as_recarray(self):
+        data = """\
+a,1
+aa,2
+aaa,3
+aaaa,4
+aaaaa,5"""
+
+        if compat.is_platform_windows():
+            raise nose.SkipTest(
+                "segfaults on win-64, only when all tests are run")
+
+        def _make_reader(**kwds):
+            return TextReader(StringIO(data), delimiter=',', header=None,
+                              **kwds)
 
         reader = _make_reader(dtype='S4', as_recarray=True)
         result = reader.read()
@@ -335,6 +367,29 @@ a,b,c
                     1: np.array(['2', ''], dtype=object),
                     2: np.array(['3', ''], dtype=object)}
         assert_array_dicts_equal(result, expected)
+
+        # GH5664
+        a = DataFrame([['b'], [nan]], columns=['a'], index=['a', 'c'])
+        b = DataFrame([[1, 1, 1, 0], [1, 1, 1, 0]],
+                      columns=list('abcd'),
+                      index=[1, 1])
+        c = DataFrame([[1, 2, 3, 4], [6, nan, nan, nan],
+                       [8, 9, 10, 11], [13, 14, nan, nan]],
+                      columns=list('abcd'),
+                      index=[0, 5, 7, 12])
+
+        for _ in range(100):
+            df = read_csv(StringIO('a,b\nc\n'), skiprows=0,
+                          names=['a'], engine='c')
+            assert_frame_equal(df, a)
+
+            df = read_csv(StringIO('1,1,1,1,0\n' * 2 + '\n' * 2),
+                          names=list("abcd"), engine='c')
+            assert_frame_equal(df, b)
+
+            df = read_csv(StringIO('0,1,2,3,4\n5,6\n7,8,9,10,11\n12,13,14'),
+                          names=list('abcd'), engine='c')
+            assert_frame_equal(df, c)
 
 
 def assert_array_dicts_equal(left, right):

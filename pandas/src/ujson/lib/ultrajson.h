@@ -95,7 +95,7 @@ typedef __int64 JSLONG;
 
 #define FASTCALL_MSVC __fastcall
 #define FASTCALL_ATTR
-#define INLINE_PREFIX __inline
+#define INLINE_PREFIX static __inline
 
 #else
 
@@ -114,7 +114,7 @@ typedef uint32_t JSUINT32;
 #define FASTCALL_ATTR
 #endif
 
-#define INLINE_PREFIX inline
+#define INLINE_PREFIX static inline
 
 typedef uint8_t JSUINT8;
 typedef uint16_t JSUTF16;
@@ -309,5 +309,6 @@ typedef struct __JSONObjectDecoder
 } JSONObjectDecoder;
 
 EXPORTFUNCTION JSOBJ JSON_DecodeObject(JSONObjectDecoder *dec, const char *buffer, size_t cbBuffer);
+EXPORTFUNCTION void encode(JSOBJ, JSONObjectEncoder *, const char *, size_t);
 
 #endif

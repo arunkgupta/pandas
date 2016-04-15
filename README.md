@@ -1,8 +1,65 @@
+<div align="center">
+  <img src="http://pandas.pydata.org/_static/pandas_horizontal_web.png"><br>
+</div>
+
+-----------------
+
 # pandas: powerful Python data analysis toolkit
 
-![Travis-CI Build Status](https://travis-ci.org/pydata/pandas.svg)
+<table>
+<tr>
+  <td>Latest Release</td>
+  <td><img src="https://img.shields.io/pypi/v/pandas.svg" alt="latest release" /></td>
+</tr>
+  <td></td>
+  <td><img src="https://anaconda.org/pandas/pandas/badges/version.svg" alt="latest release" /></td>
+</tr>
+<tr>
+  <td>Package Status</td>
+  <td><img src="https://img.shields.io/pypi/status/pandas.svg" alt="status" /></td>
+</tr>
+<tr>
+  <td>License</td>
+  <td><img src="https://img.shields.io/pypi/l/pandas.svg" alt="license" /></td>
+</tr>
+<tr>
+  <td>Build Status</td>
+  <td>
+    <a href="https://travis-ci.org/pydata/pandas">
+    <img src="https://travis-ci.org/pydata/pandas.svg?branch=master" alt="travis build status" />
+    </a>
+  </td>
+</tr>
+  <td></td>
+  <td>
+    <a href="https://ci.appveyor.com/project/jreback/pandas-465">
+    <img src="https://ci.appveyor.com/api/projects/status/iblk29s98quexwxi/branch/master?svg=true" alt="appveyor build status" />
+    </a>
+  </td>
+</tr>
+<tr>
+  <td>Coverage</td>
+  <td><img src="https://codecov.io/github/pydata/pandas/coverage.svg?branch=master" alt="coverage" /></td>
+</tr>
+<tr>
+  <td>Conda</td>
+  <td>
+    <a href="http://pandas.pydata.org">
+    <img src="http://pubbadges.s3-website-us-east-1.amazonaws.com/pkgs-downloads-pandas.png" alt="conda downloads" />
+    </a>
+  </td>
+</tr>
+<tr>
+  <td>PyPI</td>
+  <td>
+    <a href="https://pypi.python.org/pypi/pandas/">
+    <img src="https://img.shields.io/pypi/dm/pandas.svg" alt="pypi downloads" />
+    </a>
+  </td>
+</tr>
+</table>
 
-[![Scatter-CI Status page](http://scatterci.github.io/scatterci48.jpg)](http://scatterci.github.io/pydata/pandas)
+[![https://gitter.im/pydata/pandas](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/pydata/pandas?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
 ## What is it
 
@@ -89,6 +146,12 @@ or  `pip`:
 pip install pandas
 ```
 
+or  `conda`:
+
+```sh
+conda install pandas
+```
+
 ## Dependencies
 - [NumPy](http://www.numpy.org): 1.7.0 or higher
 - [python-dateutil](http://labix.org/python-dateutil): 1.5 or higher
@@ -119,7 +182,7 @@ pip install pandas
      - xlrd >= 0.9.0
   - [XlsxWriter](https://pypi.python.org/pypi/XlsxWriter)
      - Alternative Excel writer.
-- [Google bq Command Line Tool](https://developers.google.com/bigquery/bq-command-line-tool/)
+- [Google bq Command Line Tool](https://cloud.google.com/bigquery/bq-command-line-tool)
   - Needed for `pandas.io.gbq`
 - [boto](https://pypi.python.org/pypi/boto): necessary for Amazon S3 access.
 - One of the following combinations of libraries is needed to use the
@@ -178,7 +241,7 @@ cloning the git repo), execute:
 python setup.py install
 ```
 
-or for installing in [development mode](http://www.pip-installer.org/en/latest/usage.html):
+or for installing in [development mode](https://pip.pypa.io/en/latest/reference/pip_install.html#editable-installs):
 
 ```sh
 python setup.py develop
@@ -186,7 +249,7 @@ python setup.py develop
 
 Alternatively, you can use `pip` if you want all the dependencies pulled
 in automatically (the `-e` option is for installing it in [development
-mode](http://www.pip-installer.org/en/latest/usage.html)):
+mode](https://pip.pypa.io/en/latest/reference/pip_install.html#editable-installs)):
 
 ```sh
 pip install -e .

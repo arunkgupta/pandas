@@ -18,7 +18,7 @@ Instructions for installing from source,
 Python version support
 ----------------------
 
-Officially Python 2.6, 2.7, 3.2, 3.3, and 3.4.
+Officially Python 2.7, 3.4, and 3.5
 
 Installing pandas
 -----------------
@@ -34,6 +34,8 @@ pandas at all.
 
 Simply create an account, and have access to pandas from within your brower via
 an `IPython Notebook <http://ipython.org/notebook.html>`__ in a few minutes.
+
+.. _install.anaconda:
 
 Installing pandas with Anaconda
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -65,6 +67,8 @@ An additional advantage of installing with Anaconda is that you don't require
 admin rights to install it, it will install in the user's home directory, and
 this also makes it trivial to delete Anaconda at a later date (just delete
 that folder).
+
+.. _install.miniconda:
 
 Installing pandas with Miniconda
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -149,7 +153,8 @@ and can take a few minutes to complete.
 Installing using your Linux distribution's package manager.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-
+The commands in this table will install pandas for Python 2 from your distribution.
+To install pandas for Python 3 you may need to use the package ``python3-pandas``.
 
 .. csv-table::
     :header: "Distribution", "Status", "Download / Repository Link", "Install method"
@@ -173,47 +178,8 @@ Installing using your Linux distribution's package manager.
 
 Installing from source
 ~~~~~~~~~~~~~~~~~~~~~~
-.. note::
 
-   Installing from the git repository requires a recent installation of `Cython
-   <http://cython.org>`__ as the cythonized C sources are no longer checked
-   into source control. Released source distributions will contain the built C
-   files. I recommend installing the latest Cython via ``easy_install -U
-   Cython``
-
-The source code is hosted at http://github.com/pydata/pandas, it can be checked
-out using git and compiled / installed like so:
-
-::
-
-  git clone git://github.com/pydata/pandas.git
-  cd pandas
-  python setup.py install
-
-Make sure you have Cython installed when installing from the repository,
-rather then a tarball or pypi.
-
-On Windows, I suggest installing the MinGW compiler suite following the
-directions linked to above. Once configured property, run the following on the
-command line:
-
-::
-
-  python setup.py build --compiler=mingw32
-  python setup.py install
-
-Note that you will not be able to import pandas if you open an interpreter in
-the source directory unless you build the C extensions in place:
-
-::
-
-  python setup.py build_ext --inplace
-
-The most recent version of MinGW (any installer dated after 2011-08-03)
-has removed the '-mno-cygwin' option but Distutils has not yet been updated to
-reflect that. Thus, you may run into an error like "unrecognized command line
-option '-mno-cygwin'". Until the bug is fixed in Distutils, you may need to
-install a slightly older version of MinGW (2011-08-02 installer).
+See the :ref:`contributing documentation <contributing>` for complete instructions on building from the git source tree. Further, see :ref:`creating a development environment <contributing.dev_env>` if you wish to create a *pandas* development environment.
 
 Running the test suite
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -226,40 +192,40 @@ installed), make sure you have `nose
 
 ::
 
-    $ nosetests pandas
-    ..........................................................................
-    .......................S..................................................
-    ..........................................................................
-    ..........................................................................
-    ..........................................................................
-    ..........................................................................
-    ..........................................................................
-    ..........................................................................
-    ..........................................................................
-    ..........................................................................
-    .................S........................................................
-    ....
-    ----------------------------------------------------------------------
-    Ran 818 tests in 21.631s
+    >>> import pandas as pd
+    >>> pd.test()
+    Running unit tests for pandas
+    pandas version 0.18.0
+    numpy version 1.10.2
+    pandas is installed in pandas
+    Python version 2.7.11 |Continuum Analytics, Inc.|
+       (default, Dec  6 2015, 18:57:58) [GCC 4.2.1 (Apple Inc. build 5577)]
+    nose version 1.3.7
+    ..................................................................S......
+    ........S................................................................
+    .........................................................................
 
-    OK (SKIP=2)
+    ----------------------------------------------------------------------
+    Ran 9252 tests in 368.339s
+
+    OK (SKIP=117)
 
 Dependencies
 ------------
 
-* `NumPy <http://www.numpy.org>`__: 1.7.0 or higher
-* `python-dateutil <http://labix.org/python-dateutil>`__ 1.5
-* `pytz <http://pytz.sourceforge.net/>`__
-   * Needed for time zone support
+* `setuptools <http://pythonhosted.org/setuptools>`__
+* `NumPy <http://www.numpy.org>`__: 1.7.1 or higher
+* `python-dateutil <http://labix.org/python-dateutil>`__: 1.5 or higher
+* `pytz <http://pytz.sourceforge.net/>`__: Needed for time zone support
 
 .. _install.recommended_dependencies:
 
 Recommended Dependencies
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-* `numexpr <http://code.google.com/p/numexpr/>`__: for accelerating certain numerical operations.
+* `numexpr <https://github.com/pydata/numexpr>`__: for accelerating certain numerical operations.
   ``numexpr`` uses multiple cores as well as smart chunking and caching to achieve large speedups.
-  If installed, must be Version 2.1 or higher.
+  If installed, must be Version 2.1 or higher (excluding a buggy 2.4.4). Version 2.4.6 or higher is highly recommended.
 
 * `bottleneck <http://berkeleyanalytics.com/bottleneck>`__: for accelerating certain types of ``nan``
   evaluations. ``bottleneck`` uses specialized cython routines to achieve large speedups.
@@ -278,34 +244,34 @@ Optional Dependencies
 * `Cython <http://www.cython.org>`__: Only necessary to build development
   version. Version 0.19.1 or higher.
 * `SciPy <http://www.scipy.org>`__: miscellaneous statistical functions
-* `PyTables <http://www.pytables.org>`__: necessary for HDF5-based storage. Version 3.0.0 or higher required.
-* `SQLAlchemy <http://www.sqlalchemy.org>`__: for SQL database support. Version 0.8.1 or higher recommended.
+* `xarray <http://xarray.pydata.org>`__: pandas like handling for > 2 dims, needed for converting Panels to xarray objects. Version 0.7.0 or higher is recommended.
+* `PyTables <http://www.pytables.org>`__: necessary for HDF5-based storage. Version 3.0.0 or higher required, Version 3.2.1 or higher highly recommended.
+* `SQLAlchemy <http://www.sqlalchemy.org>`__: for SQL database support. Version 0.8.1 or higher recommended. Besides SQLAlchemy, you also need a database specific driver. You can find an overview of supported drivers for each SQL dialect in the `SQLAlchemy docs <http://docs.sqlalchemy.org/en/latest/dialects/index.html>`__. Some common drivers are:
+
+    - `psycopg2 <http://initd.org/psycopg/>`__: for PostgreSQL
+    - `pymysql <https://github.com/PyMySQL/PyMySQL>`__: for MySQL.
+    - `SQLite <https://docs.python.org/3.5/library/sqlite3.html>`__: for SQLite, this is included in Python's standard library by default.
+
 * `matplotlib <http://matplotlib.sourceforge.net/>`__: for plotting
-* `statsmodels <http://statsmodels.sourceforge.net/>`__
-   * Needed for parts of :mod:`pandas.stats`
-* `openpyxl <http://packages.python.org/openpyxl/>`__, `xlrd/xlwt <http://www.python-excel.org/>`__
-   * openpyxl version 1.6.1 or higher, but lower than 2.0.0
-   * Needed for Excel I/O
-* `XlsxWriter <https://pypi.python.org/pypi/XlsxWriter>`__
-   * Alternative Excel writer.
+* `openpyxl <http://packages.python.org/openpyxl/>`__, `xlrd/xlwt <http://www.python-excel.org/>`__: Needed for Excel I/O
+* `XlsxWriter <https://pypi.python.org/pypi/XlsxWriter>`__: Alternative Excel writer
+* `Jinja2 <http://jinja.pocoo.org/>`__: Template engine for conditional HTML formatting.
 * `boto <https://pypi.python.org/pypi/boto>`__: necessary for Amazon S3
   access.
+* `blosc <https://pypi.python.org/pypi/blosc>`__: for msgpack compression using ``blosc``
 * One of `PyQt4
   <http://www.riverbankcomputing.com/software/pyqt/download>`__, `PySide
   <http://qt-project.org/wiki/Category:LanguageBindings::PySide>`__, `pygtk
   <http://www.pygtk.org/>`__, `xsel
   <http://www.vergenet.net/~conrad/software/xsel/>`__, or `xclip
   <http://sourceforge.net/projects/xclip/>`__: necessary to use
-  :func:`~pandas.io.clipboard.read_clipboard`. Most package managers on Linux
-  distributions will have xclip and/or xsel immediately available for
-  installation.
-* Google's `python-gflags <http://code.google.com/p/python-gflags/>`__
+  :func:`~pandas.io.clipboard.read_clipboard`. Most package managers on Linux distributions will have ``xclip`` and/or ``xsel`` immediately available for installation.
+* Google's `python-gflags <http://code.google.com/p/python-gflags/>`__ ,
+  `oauth2client <https://github.com/google/oauth2client>`__ ,
+  `httplib2 <http://pypi.python.org/pypi/httplib2>`__
   and `google-api-python-client <http://github.com/google/google-api-python-client>`__
-   * Needed for :mod:`~pandas.io.gbq`
-* `setuptools <https://pypi.python.org/pypi/setuptools/>`__
-   * Needed for :mod:`~pandas.io.gbq` (specifically, it utilizes `pkg_resources`)
-* `httplib2 <http://pypi.python.org/pypi/httplib2>`__
-   * Needed for :mod:`~pandas.io.gbq`
+  : Needed for :mod:`~pandas.io.gbq`
+* `Backports.lzma <https://pypi.python.org/pypi/backports.lzma/>`__: Only for Python 2, for writing to and/or reading from an xz compressed DataFrame in CSV; Python 3 support is built into the standard library.
 * One of the following combinations of libraries is needed to use the
   top-level :func:`~pandas.io.html.read_html` function:
 
@@ -352,6 +318,5 @@ Optional Dependencies
 
    Without the optional dependencies, many useful features will not
    work. Hence, it is highly recommended that you install these. A packaged
-   distribution like `Enthought Canopy
+   distribution like `Anaconda <http://docs.continuum.io/anaconda/>`__, or `Enthought Canopy
    <http://enthought.com/products/canopy>`__ may be worth considering.
-

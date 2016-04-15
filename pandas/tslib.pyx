@@ -3,7 +3,13 @@
 cimport numpy as np
 from numpy cimport (int8_t, int32_t, int64_t, import_array, ndarray,
                     NPY_INT64, NPY_DATETIME, NPY_TIMEDELTA)
+from datetime cimport get_datetime64_value, get_timedelta64_value
 import numpy as np
+
+# GH3363
+from sys import version_info
+cdef bint PY2 = version_info[0] == 2
+cdef bint PY3 = not PY2
 
 from cpython cimport (
     PyTypeObject,
@@ -11,8 +17,9 @@ from cpython cimport (
     PyLong_Check,
     PyObject_RichCompareBool,
     PyObject_RichCompare,
-    PyString_Check,
-    Py_GT, Py_GE, Py_EQ, Py_NE, Py_LT, Py_LE
+    Py_GT, Py_GE, Py_EQ, Py_NE, Py_LT, Py_LE,
+    PyUnicode_Check,
+    PyUnicode_AsUTF8String,
 )
 
 # Cython < 0.17 doesn't have this in cpython
@@ -24,11 +31,10 @@ cdef extern from "datetime_helper.h":
     double total_seconds(object)
 
 # this is our datetime.pxd
-from datetime cimport *
-from util cimport is_integer_object, is_float_object, is_datetime64_object, is_timedelta64_object
-
+from datetime cimport cmp_pandas_datetimestruct
 from libc.stdlib cimport free
 
+from util cimport is_integer_object, is_float_object, is_datetime64_object, is_timedelta64_object
 cimport util
 
 from datetime cimport *
@@ -38,20 +44,25 @@ cimport cython
 from datetime import timedelta, datetime
 from datetime import time as datetime_time
 
+import re
+
 # dateutil compat
 from dateutil.tz import (tzoffset, tzlocal as _dateutil_tzlocal, tzfile as _dateutil_tzfile,
-                         tzutc as _dateutil_tzutc)
-from dateutil.zoneinfo import gettz as _dateutil_gettz
+                         tzutc as _dateutil_tzutc, tzstr as _dateutil_tzstr)
+
+from pandas.compat import is_platform_windows
+if is_platform_windows():
+    from dateutil.zoneinfo import gettz as _dateutil_gettz
+else:
+    from dateutil.tz import gettz as _dateutil_gettz
+from dateutil.relativedelta import relativedelta
+from dateutil.parser import DEFAULTPARSER
 
 from pytz.tzinfo import BaseTzInfo as _pytz_BaseTzInfo
-from pandas.compat import parse_date, string_types, PY3, iteritems
+from pandas.compat import parse_date, string_types, iteritems, StringIO, callable
 
-from sys import version_info
 import operator
 import collections
-
-# GH3363
-cdef bint PY2 = version_info[0] == 2
 
 # initialize numpy
 import_array()
@@ -64,12 +75,11 @@ PyDateTime_IMPORT
 # numpy_pydatetime_import
 
 cdef int64_t NPY_NAT = util.get_nat()
+iNaT = NPY_NAT
 
 # < numpy 1.7 compat for NaT
 compat_NaT = np.array([NPY_NAT]).astype('m8[ns]').item()
 
-# numpy actual nat object
-np_NaT = np.datetime64('NaT')
 
 try:
     basestring
@@ -116,7 +126,7 @@ def ints_to_pydatetime(ndarray[int64_t] arr, tz=None, offset=None, box=False):
         if _is_utc(tz):
             for i in range(n):
                 value = arr[i]
-                if value == iNaT:
+                if value == NPY_NAT:
                     result[i] = NaT
                 else:
                     pandas_datetime_to_datetimestruct(value, PANDAS_FR_ns, &dts)
@@ -124,7 +134,7 @@ def ints_to_pydatetime(ndarray[int64_t] arr, tz=None, offset=None, box=False):
         elif _is_tzlocal(tz) or _is_fixed_offset(tz):
             for i in range(n):
                 value = arr[i]
-                if value == iNaT:
+                if value == NPY_NAT:
                     result[i] = NaT
                 else:
                     pandas_datetime_to_datetimestruct(value, PANDAS_FR_ns, &dts)
@@ -139,7 +149,7 @@ def ints_to_pydatetime(ndarray[int64_t] arr, tz=None, offset=None, box=False):
             for i in range(n):
 
                 value = arr[i]
-                if value == iNaT:
+                if value == NPY_NAT:
                     result[i] = NaT
                 else:
 
@@ -158,7 +168,7 @@ def ints_to_pydatetime(ndarray[int64_t] arr, tz=None, offset=None, box=False):
         for i in range(n):
 
             value = arr[i]
-            if value == iNaT:
+            if value == NPY_NAT:
                 result[i] = NaT
             else:
                 pandas_datetime_to_datetimestruct(value, PANDAS_FR_ns, &dts)
@@ -177,7 +187,7 @@ def ints_to_pytimedelta(ndarray[int64_t] arr, box=False):
     for i in range(n):
 
         value = arr[i]
-        if value == iNaT:
+        if value == NPY_NAT:
             result[i] = NaT
         else:
             if box:
@@ -214,7 +224,21 @@ class Timestamp(_Timestamp):
     and is interchangable with it in most cases. It's the type used
     for the entries that make up a DatetimeIndex, and other timeseries
     oriented data structures in pandas.
+
+    Parameters
+    ----------
+    ts_input : datetime-like, str, int, float
+        Value to be converted to Timestamp
+    offset : str, DateOffset
+        Offset which Timestamp will have
+    tz : string, pytz.timezone, dateutil.tz.tzfile or None
+        Time zone for time which Timestamp will have.
+    unit : string
+        numpy unit used for conversion, if ts_input is int or float
     """
+
+    # Do not add ``dayfirst`` and ``yearfist`` to Timestamp based on the discussion
+    # https://github.com/pydata/pandas/pull/7599
 
     @classmethod
     def fromordinal(cls, ordinal, offset=None, tz=None):
@@ -292,50 +316,52 @@ class Timestamp(_Timestamp):
 
         return ts_base
 
-    def __repr__(self):
-        stamp = self._repr_base
-        zone = None
 
-        try:
-            stamp += self.strftime('%z')
-            if self.tzinfo:
-                zone = _get_zone(self.tzinfo)
-        except ValueError:
-            year2000 = self.replace(year=2000)
-            stamp += year2000.strftime('%z')
-            if self.tzinfo:
-                zone = _get_zone(self.tzinfo)
+    def _round(self, freq, rounder):
 
-        try:
-            stamp += zone.strftime(' %%Z')
-        except:
-            pass
+        cdef int64_t unit
+        cdef object result, value
 
-        tz = ", tz='{0}'".format(zone) if zone is not None else ""
-        offset = ", offset='{0}'".format(self.offset.freqstr) if self.offset is not None else ""
-
-        return "Timestamp('{stamp}'{tz}{offset})".format(stamp=stamp, tz=tz, offset=offset)
-
-    @property
-    def _date_repr(self):
-        # Ideal here would be self.strftime("%Y-%m-%d"), but
-        # the datetime strftime() methods require year >= 1900
-        return '%d-%.2d-%.2d' % (self.year, self.month, self.day)
-
-    @property
-    def _time_repr(self):
-        result = '%.2d:%.2d:%.2d' % (self.hour, self.minute, self.second)
-
-        if self.nanosecond != 0:
-            result += '.%.9d' % (self.nanosecond + 1000 * self.microsecond)
-        elif self.microsecond != 0:
-            result += '.%.6d' % self.microsecond
-
+        from pandas.tseries.frequencies import to_offset
+        unit = to_offset(freq).nanos
+        if self.tz is not None:
+            value = self.tz_localize(None).value
+        else:
+            value = self.value
+        result = Timestamp(unit*rounder(value/float(unit)),unit='ns')
+        if self.tz is not None:
+            result = result.tz_localize(self.tz)
         return result
 
-    @property
-    def _repr_base(self):
-        return '%s %s' % (self._date_repr, self._time_repr)
+    def round(self, freq):
+        """
+        return a new Timestamp rounded to this resolution
+
+        Parameters
+        ----------
+        freq : a freq string indicating the rounding resolution
+        """
+        return self._round(freq, np.round)
+
+    def floor(self, freq):
+        """
+        return a new Timestamp floored to this resolution
+
+        Parameters
+        ----------
+        freq : a freq string indicating the flooring resolution
+        """
+        return self._round(freq, np.floor)
+
+    def ceil(self, freq):
+        """
+        return a new Timestamp ceiled to this resolution
+
+        Parameters
+        ----------
+        freq : a freq string indicating the ceiling resolution
+        """
+        return self._round(freq, np.ceil)
 
     @property
     def tz(self):
@@ -391,12 +417,14 @@ class Timestamp(_Timestamp):
         return self._get_field('q')
 
     @property
-    def freqstr(self):
-        return getattr(self.offset, 'freqstr', self.offset)
+    def days_in_month(self):
+        return self._get_field('dim')
+
+    daysinmonth = days_in_month
 
     @property
-    def asm8(self):
-        return np.int64(self.value).view('M8[ns]')
+    def freqstr(self):
+        return getattr(self.offset, 'freqstr', self.offset)
 
     @property
     def is_month_start(self):
@@ -441,6 +469,11 @@ class Timestamp(_Timestamp):
         Returns
         -------
         localized : Timestamp
+
+        Raises
+        ------
+        TypeError
+            If the Timestamp is tz-aware and tz is not None.
         """
         if ambiguous == 'infer':
             raise ValueError('Cannot infer offset with only one time.')
@@ -450,7 +483,7 @@ class Timestamp(_Timestamp):
             tz = maybe_get_tz(tz)
             if not isinstance(ambiguous, basestring):
                 ambiguous   =   [ambiguous]
-            value = tz_localize_to_utc(np.array([self.value]), tz,
+            value = tz_localize_to_utc(np.array([self.value],dtype='i8'), tz,
                                        ambiguous=ambiguous)[0]
             return Timestamp(value, tz=tz)
         else:
@@ -462,10 +495,10 @@ class Timestamp(_Timestamp):
                 raise TypeError('Cannot localize tz-aware Timestamp, use '
                                 'tz_convert for conversions')
 
+
     def tz_convert(self, tz):
         """
-        Convert Timestamp to another time zone or localize to requested time
-        zone
+        Convert tz-aware Timestamp to another time zone.
 
         Parameters
         ----------
@@ -476,6 +509,11 @@ class Timestamp(_Timestamp):
         Returns
         -------
         converted : Timestamp
+
+        Raises
+        ------
+        TypeError
+            If Timestamp is tz-naive.
         """
         if self.tzinfo is None:
             # tz naive, use tz_localize
@@ -558,6 +596,14 @@ class Timestamp(_Timestamp):
                  self.nanosecond/3600.0/1e+9
                 )/24.0)
 
+    def normalize(self):
+        """
+        Normalize Timestamp to midnight, preserving
+        tz information.
+        """
+        normalized_value = date_normalize(np.array([self.value], dtype='i8'), tz=self.tz)[0]
+        return Timestamp(normalized_value).tz_localize(self.tz)
+
     def __radd__(self, other):
         # __radd__ on cython extension types like _Timestamp is not used, so
         # define it here instead
@@ -583,8 +629,12 @@ class NaTType(_NaT):
     def __str__(self):
         return 'NaT'
 
+    def isoformat(self, sep='T'):
+        # This allows Timestamp(ts.isoformat()) to always correctly roundtrip.
+        return 'NaT'
+
     def __hash__(self):
-        return iNaT
+        return NPY_NAT
 
     def __int__(self):
         return NPY_NAT
@@ -592,21 +642,79 @@ class NaTType(_NaT):
     def __long__(self):
         return NPY_NAT
 
-    def weekday(self):
-        return np.nan
-
-    def toordinal(self):
-        return -1
-
     def __reduce__(self):
         return (__nat_unpickle, (None, ))
 
+    def total_seconds(self):
+        # GH 10939
+        return np.nan
+
+    def __rdiv__(self, other):
+        return _nat_rdivide_op(self, other)
+
+    def __rtruediv__(self, other):
+        return _nat_rdivide_op(self, other)
+
+    def __rfloordiv__(self, other):
+        return _nat_rdivide_op(self, other)
+
+    def __rmul__(self, other):
+        if is_integer_object(other) or is_float_object(other):
+            return NaT
+        return NotImplemented
+
+
+
 fields = ['year', 'quarter', 'month', 'day', 'hour',
           'minute', 'second', 'millisecond', 'microsecond', 'nanosecond',
-          'week', 'dayofyear']
+          'week', 'dayofyear', 'days_in_month', 'daysinmonth', 'dayofweek']
 for field in fields:
     prop = property(fget=lambda self: np.nan)
     setattr(NaTType, field, prop)
+
+# GH9513 NaT methods (except to_datetime64) to raise, return np.nan, or return NaT
+# create functions that raise, for binding to NaTType
+def _make_error_func(func_name):
+    def f(*args, **kwargs):
+        raise ValueError("NaTType does not support " + func_name)
+    f.__name__ = func_name
+    return f
+
+def _make_nat_func(func_name):
+    def f(*args, **kwargs):
+        return NaT
+    f.__name__ = func_name
+    return f
+
+def _make_nan_func(func_name):
+    def f(*args, **kwargs):
+        return np.nan
+    f.__name__ = func_name
+    return f
+
+_nat_methods = ['date', 'now', 'replace', 'to_datetime', 'today']
+
+_nan_methods = ['weekday', 'isoweekday', 'total_seconds']
+
+_implemented_methods = ['to_datetime64', 'isoformat']
+_implemented_methods.extend(_nat_methods)
+_implemented_methods.extend(_nan_methods)
+
+for _method_name in _nat_methods:
+    # not all methods exist in all versions of Python
+    if hasattr(NaTType, _method_name):
+        setattr(NaTType, _method_name, _make_nat_func(_method_name))
+
+for _method_name in _nan_methods:
+    if hasattr(NaTType, _method_name):
+        setattr(NaTType, _method_name, _make_nan_func(_method_name))
+
+for _maybe_method_name in dir(NaTType):
+    _maybe_method = getattr(NaTType, _maybe_method_name)
+    if (callable(_maybe_method)
+        and not _maybe_method_name.startswith("_")
+        and _maybe_method_name not in _implemented_methods):
+        setattr(NaTType, _maybe_method_name, _make_error_func(_maybe_method_name))
 
 def __nat_unpickle(*args):
     # return constant defined in the module
@@ -614,13 +722,27 @@ def __nat_unpickle(*args):
 
 NaT = NaTType()
 
-iNaT = util.get_nat()
-
-
 cdef inline bint _checknull_with_nat(object val):
     """ utility to check if a value is a nat or not """
     return val is None or (
         PyFloat_Check(val) and val != val) or val is NaT
+
+cdef inline bint _check_all_nulls(object val):
+    """ utility to check if a value is any type of null """
+    cdef bint res
+    if PyFloat_Check(val):
+        res = val != val
+    elif val is NaT:
+        res = 1
+    elif val is None:
+        res = 1
+    elif is_datetime64_object(val):
+        res = get_datetime64_value(val) == NPY_NAT
+    elif is_timedelta64_object(val):
+        res = get_timedelta64_value(val) == NPY_NAT
+    else:
+        res = 0
+    return res
 
 cdef inline bint _cmp_nat_dt(_NaT lhs, _Timestamp rhs, int op) except -1:
     return _nat_scalar_rules[op]
@@ -811,6 +933,30 @@ cdef class _Timestamp(datetime):
         self._assert_tzawareness_compat(other)
         return _cmp_scalar(self.value, ots.value, op)
 
+    def __repr__(self):
+        stamp = self._repr_base
+        zone = None
+
+        try:
+            stamp += self.strftime('%z')
+            if self.tzinfo:
+                zone = _get_zone(self.tzinfo)
+        except ValueError:
+            year2000 = self.replace(year=2000)
+            stamp += year2000.strftime('%z')
+            if self.tzinfo:
+                zone = _get_zone(self.tzinfo)
+
+        try:
+            stamp += zone.strftime(' %%Z')
+        except:
+            pass
+
+        tz = ", tz='{0}'".format(zone) if zone is not None else ""
+        offset = ", offset='{0}'".format(self.offset.freqstr) if self.offset is not None else ""
+
+        return "Timestamp('{stamp}'{tz}{offset})".format(stamp=stamp, tz=tz, offset=offset)
+
     cdef bint _compare_outside_nanorange(_Timestamp self, datetime other,
                                          int op) except -1:
         cdef datetime dtval = self.to_datetime()
@@ -852,6 +998,10 @@ cdef class _Timestamp(datetime):
                         dts.hour, dts.min, dts.sec,
                         dts.us, ts.tzinfo)
 
+    cpdef to_datetime64(self):
+        """ Returns a numpy.datetime64 object with 'ns' precision """
+        return np.datetime64(self.value, 'ns')
+
     def __add__(self, other):
         cdef int64_t other_int
 
@@ -874,7 +1024,7 @@ cdef class _Timestamp(datetime):
 
         # index/series like
         elif hasattr(other, '_typ'):
-            return other + self
+            return NotImplemented
 
         result = datetime.__add__(self, other)
         if isinstance(result, datetime):
@@ -889,16 +1039,12 @@ cdef class _Timestamp(datetime):
             return self + neg_other
 
         # a Timestamp-DatetimeIndex -> yields a negative TimedeltaIndex
-        elif getattr(other,'_typ',None) == 'datetimeindex':
-
-            # we may be passed reverse ops
-            if get_timezone(getattr(self,'tzinfo',None)) != get_timezone(other.tz):
-                    raise TypeError("Timestamp subtraction must have the same timezones or no timezones")
-
+        elif getattr(other, '_typ', None) == 'datetimeindex':
+            # timezone comparison is performed in DatetimeIndex._sub_datelike
             return -other.__sub__(self)
 
         # a Timestamp-TimedeltaIndex -> yields a negative TimedeltaIndex
-        elif getattr(other,'_typ',None) == 'timedeltaindex':
+        elif getattr(other, '_typ', None) == 'timedeltaindex':
             return (-other).__add__(self)
 
         elif other is NaT:
@@ -924,13 +1070,38 @@ cdef class _Timestamp(datetime):
 
     cpdef _get_field(self, field):
         out = get_date_field(np.array([self.value], dtype=np.int64), field)
-        return out[0]
+        return int(out[0])
 
     cpdef _get_start_end_field(self, field):
         month_kw = self.freq.kwds.get('startingMonth', self.freq.kwds.get('month', 12)) if self.freq else 12
         freqstr = self.freqstr if self.freq else None
         out = get_start_end_field(np.array([self.value], dtype=np.int64), field, freqstr, month_kw)
         return out[0]
+
+    property _repr_base:
+        def __get__(self):
+            return '%s %s' % (self._date_repr, self._time_repr)
+
+    property _date_repr:
+        def __get__(self):
+            # Ideal here would be self.strftime("%Y-%m-%d"), but
+            # the datetime strftime() methods require year >= 1900
+            return '%d-%.2d-%.2d' % (self.year, self.month, self.day)
+
+    property _time_repr:
+        def __get__(self):
+            result = '%.2d:%.2d:%.2d' % (self.hour, self.minute, self.second)
+
+            if self.nanosecond != 0:
+                result += '.%.9d' % (self.nanosecond + 1000 * self.microsecond)
+            elif self.microsecond != 0:
+                result += '.%.6d' % self.microsecond
+
+            return result
+
+    property asm8:
+        def __get__(self):
+            return np.datetime64(self.value, 'ns')
 
 
 cdef PyTypeObject* ts_type = <PyTypeObject*> Timestamp
@@ -949,6 +1120,18 @@ _nat_scalar_rules[Py_LE] = False
 _nat_scalar_rules[Py_GT] = False
 _nat_scalar_rules[Py_GE] = False
 
+
+cdef _nat_divide_op(self, other):
+    if isinstance(other, (Timedelta, np.timedelta64)) or other is NaT:
+        return np.nan
+    if is_integer_object(other) or is_float_object(other):
+        return NaT
+    return NotImplemented
+
+cdef _nat_rdivide_op(self, other):
+    if isinstance(other, Timedelta):
+        return np.nan
+    return NotImplemented
 
 cdef class _NaT(_Timestamp):
 
@@ -972,7 +1155,10 @@ cdef class _NaT(_Timestamp):
 
     def __add__(self, other):
         try:
+            if isinstance(other, datetime):
+                return NaT
             result = _Timestamp.__add__(self, other)
+            # Timestamp.__add__ doesn't return DatetimeIndex/TimedeltaIndex
             if result is NotImplemented:
                 return result
         except (OverflowError, OutOfBoundsDatetime):
@@ -980,19 +1166,43 @@ cdef class _NaT(_Timestamp):
         return NaT
 
     def __sub__(self, other):
-
-        if type(self) is datetime:
-            other, self = self, other
+        if isinstance(other, (datetime, timedelta)):
+            return NaT
         try:
             result = _Timestamp.__sub__(self, other)
-            if result is NotImplemented:
+            # Timestamp.__sub__ may return DatetimeIndex/TimedeltaIndex
+            if result is NotImplemented or hasattr(result, '_typ'):
                 return result
         except (OverflowError, OutOfBoundsDatetime):
             pass
         return NaT
 
+    def __pos__(self):
+        return NaT
+
+    def __neg__(self):
+        return NaT
+
+    def __div__(self, other):
+        return _nat_divide_op(self, other)
+
+    def __truediv__(self, other):
+        return _nat_divide_op(self, other)
+
+    def __floordiv__(self, other):
+        return _nat_divide_op(self, other)
+
+    def __mul__(self, other):
+        if is_integer_object(other) or is_float_object(other):
+            return NaT
+        return NotImplemented
+
 
 def _delta_to_nanoseconds(delta):
+    if isinstance(delta, np.ndarray):
+        return delta.astype('m8[ns]').astype('int64')
+    if hasattr(delta, 'nanos'):
+        return delta.nanos
     if hasattr(delta, 'delta'):
         delta = delta.delta
     if is_timedelta64_object(delta):
@@ -1044,45 +1254,12 @@ cdef convert_to_tsobject(object ts, object tz, object unit):
     obj = _TSObject()
 
     if util.is_string_object(ts):
-        if ts in _nat_strings:
-            ts = NaT
-        elif ts == 'now':
-            # Issue 9000, we short-circuit rather than going
-            # into np_datetime_strings which returns utc
-            ts = Timestamp.now(tz)
-        elif ts == 'today':
-            # Issue 9000, we short-circuit rather than going
-            # into np_datetime_strings which returns a normalized datetime
-            ts = Timestamp.today(tz)
-        else:
-            try:
-                _string_to_dts(ts, &obj.dts, &out_local, &out_tzoffset)
-                obj.value = pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &obj.dts)
-                _check_dts_bounds(&obj.dts)
-                if out_local == 1:
-                    obj.tzinfo = pytz.FixedOffset(out_tzoffset)
-                    obj.value = tz_convert_single(obj.value, obj.tzinfo, 'UTC')
-                    if tz is None:
-                        _check_dts_bounds(&obj.dts)
-                        return obj
-                    else:
-                        # Keep the converter same as PyDateTime's
-                        ts = Timestamp(obj.value, tz=obj.tzinfo)
-                else:
-                    ts = obj.value
-                    if tz is not None:
-                        # shift for _localize_tso
-                        ts = tz_convert_single(ts, tz, 'UTC')
-            except ValueError:
-                try:
-                    ts = parse_datetime_string(ts)
-                except Exception:
-                    raise ValueError
+        return convert_str_to_tsobject(ts, tz, unit)
 
-    if ts is None or ts is NaT or ts is np_NaT:
+    if ts is None or ts is NaT:
         obj.value = NPY_NAT
     elif is_datetime64_object(ts):
-        if ts.view('i8') == iNaT:
+        if ts.view('i8') == NPY_NAT:
             obj.value = NPY_NAT
         else:
             obj.value = _get_datetime64_nanos(ts)
@@ -1148,8 +1325,10 @@ cdef convert_to_tsobject(object ts, object tz, object unit):
         # Keep the converter same as PyDateTime's
         ts = datetime.combine(ts, datetime_time())
         return convert_to_tsobject(ts, tz, None)
-    else:
+    elif getattr(ts, '_typ', None) == 'period':
         raise ValueError("Cannot convert Period to Timestamp unambiguously. Use to_timestamp")
+    else:
+        raise TypeError('Cannot convert input to Timestamp')
 
     if obj.value != NPY_NAT:
         _check_dts_bounds(&obj.dts)
@@ -1158,6 +1337,76 @@ cdef convert_to_tsobject(object ts, object tz, object unit):
         _localize_tso(obj, tz)
 
     return obj
+
+
+cpdef convert_str_to_tsobject(object ts, object tz, object unit,
+                              dayfirst=False, yearfirst=False):
+    cdef:
+        _TSObject obj
+        int out_local = 0, out_tzoffset = 0
+
+    if tz is not None:
+        tz = maybe_get_tz(tz)
+
+    obj = _TSObject()
+
+    if ts in _nat_strings:
+        ts = NaT
+    elif ts == 'now':
+        # Issue 9000, we short-circuit rather than going
+        # into np_datetime_strings which returns utc
+        ts = Timestamp.now(tz)
+    elif ts == 'today':
+        # Issue 9000, we short-circuit rather than going
+        # into np_datetime_strings which returns a normalized datetime
+        ts = Timestamp.today(tz)
+    else:
+        try:
+            _string_to_dts(ts, &obj.dts, &out_local, &out_tzoffset)
+            obj.value = pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &obj.dts)
+            _check_dts_bounds(&obj.dts)
+            if out_local == 1:
+                obj.tzinfo = pytz.FixedOffset(out_tzoffset)
+                obj.value = tz_convert_single(obj.value, obj.tzinfo, 'UTC')
+                if tz is None:
+                    _check_dts_bounds(&obj.dts)
+                    return obj
+                else:
+                    # Keep the converter same as PyDateTime's
+                    ts = Timestamp(obj.value, tz=obj.tzinfo)
+            else:
+                ts = obj.value
+                if tz is not None:
+                    # shift for _localize_tso
+                    ts = tz_convert_single(ts, tz, 'UTC')
+        except ValueError:
+            try:
+                ts = parse_datetime_string(ts, dayfirst=dayfirst, yearfirst=yearfirst)
+            except Exception:
+                raise ValueError
+
+    return convert_to_tsobject(ts, tz, unit)
+
+def _test_parse_iso8601(object ts):
+    '''
+    TESTING ONLY: Parse string into Timestamp using iso8601 parser. Used
+    only for testing, actual construction uses `convert_str_to_tsobject`
+    '''
+    cdef:
+        _TSObject obj
+        int out_local = 0, out_tzoffset = 0
+
+    obj = _TSObject()
+
+    _string_to_dts(ts, &obj.dts, &out_local, &out_tzoffset)
+    obj.value = pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &obj.dts)
+    _check_dts_bounds(&obj.dts)
+    if out_local == 1:
+        obj.tzinfo = pytz.FixedOffset(out_tzoffset)
+        obj.value = tz_convert_single(obj.value, obj.tzinfo, 'UTC')
+        return Timestamp(obj.value, tz=obj.tzinfo)
+    else:
+        return Timestamp(obj.value)
 
 cdef inline void _localize_tso(_TSObject obj, object tz):
     '''
@@ -1318,7 +1567,7 @@ def datetime_to_datetime64(ndarray[object] values):
     for i in range(n):
         val = values[i]
         if _checknull_with_nat(val):
-            iresult[i] = iNaT
+            iresult[i] = NPY_NAT
         elif PyDateTime_Check(val):
             if val.tzinfo is not None:
                 if inferred_tz is not None:
@@ -1340,9 +1589,10 @@ def datetime_to_datetime64(ndarray[object] values):
 
     return result, inferred_tz
 
-_not_datelike_strings = set(['a','A','m','M','p','P','t','T'])
+cdef:
+    set _not_datelike_strings = set(['a','A','m','M','p','P','t','T'])
 
-def _does_string_look_like_datetime(date_string):
+cpdef object _does_string_look_like_datetime(object date_string):
     if date_string.startswith('0'):
         # Strings starting with 0 are more consistent with a
         # date-like string than a number
@@ -1359,15 +1609,359 @@ def _does_string_look_like_datetime(date_string):
 
     return True
 
-def parse_datetime_string(date_string, **kwargs):
+
+def format_array_from_datetime(ndarray[int64_t] values, object tz=None,
+                               object format=None, object na_rep=None):
+    """
+    return a np object array of the string formatted values
+
+    Parameters
+    ----------
+    values : a 1-d i8 array
+    tz : the timezone (or None)
+    format : optional, default is None
+          a strftime capable string
+    na_rep : optional, default is None
+          a nat format
+
+    """
+    cdef:
+        int64_t val, ns, N = len(values)
+        ndarray[int64_t] consider_values
+        bint show_ms = 0, show_us = 0, show_ns = 0, basic_format = 0
+        ndarray[object] result = np.empty(N, dtype=object)
+        object ts, res
+        pandas_datetimestruct dts
+
+    if na_rep is None:
+       na_rep = 'NaT'
+
+    # if we don't have a format nor tz, then choose
+    # a format based on precision
+    basic_format = format is None and tz is None
+    if basic_format:
+        consider_values = values[values != NPY_NAT]
+        show_ns = (consider_values%1000).any()
+
+        if not show_ns:
+            consider_values //= 1000
+            show_us = (consider_values%1000).any()
+
+            if not show_ms:
+                consider_values //= 1000
+                show_ms = (consider_values%1000).any()
+
+    for i in range(N):
+        val = values[i]
+
+        if val == NPY_NAT:
+            result[i] = na_rep
+        elif basic_format:
+
+            pandas_datetime_to_datetimestruct(val, PANDAS_FR_ns, &dts)
+            res = '%d-%.2d-%.2d %.2d:%.2d:%.2d' % (dts.year,
+                                                   dts.month,
+                                                   dts.day,
+                                                   dts.hour,
+                                                   dts.min,
+                                                   dts.sec)
+
+            if show_ns:
+                ns = dts.ps / 1000
+                res += '.%.9d' % (ns + 1000 * dts.us)
+            elif show_us:
+                res += '.%.6d' % dts.us
+            elif show_ms:
+                res += '.%.3d' % (dts.us/1000)
+
+            result[i] = res
+
+        else:
+
+            ts = Timestamp(val, tz=tz)
+            if format is None:
+                result[i] = str(ts)
+            else:
+
+                # invalid format string
+                # requires dates > 1900
+                try:
+                    result[i] = ts.strftime(format)
+                except ValueError:
+                    result[i] = str(ts)
+
+    return result
+
+
+class DateParseError(ValueError):
+    pass
+
+
+cdef object _TIMEPAT = re.compile(r'^([01]?[0-9]|2[0-3]):([0-5][0-9])')
+
+
+def parse_datetime_string(object date_string, object freq=None,
+                          dayfirst=False, yearfirst=False, **kwargs):
+
+    """parse datetime string, only returns datetime.
+    Also cares special handling matching time patterns.
+
+    Returns
+    -------
+    datetime
+    """
+
+    cdef:
+        object dt
+
     if not _does_string_look_like_datetime(date_string):
         raise ValueError('Given date string not likely a datetime.')
 
-    dt = parse_date(date_string, **kwargs)
+    if _TIMEPAT.match(date_string):
+        # use current datetime as default, not pass _DEFAULT_DATETIME
+        dt = parse_date(date_string, dayfirst=dayfirst,
+                        yearfirst=yearfirst, **kwargs)
+        return dt
+    try:
+        dt, _, _ = _parse_dateabbr_string(date_string, _DEFAULT_DATETIME, freq)
+        return dt
+    except DateParseError:
+        raise
+    except ValueError:
+        pass
+
+    dt = parse_date(date_string, default=_DEFAULT_DATETIME,
+                    dayfirst=dayfirst, yearfirst=yearfirst, **kwargs)
     return dt
 
-def array_to_datetime(ndarray[object] values, raise_=False, dayfirst=False,
-                      format=None, utc=None, coerce=False, unit=None):
+
+def parse_datetime_string_with_reso(object date_string, object freq=None,
+                                    dayfirst=False, yearfirst=False, **kwargs):
+    """parse datetime string, only returns datetime
+
+    Returns
+    -------
+    datetime
+    """
+
+    cdef:
+        object parsed, reso
+
+    if not _does_string_look_like_datetime(date_string):
+        raise ValueError('Given date string not likely a datetime.')
+
+    try:
+        return _parse_dateabbr_string(date_string, _DEFAULT_DATETIME, freq)
+    except DateParseError:
+        raise
+    except ValueError:
+        pass
+
+    try:
+        parsed, reso = dateutil_parse(date_string, _DEFAULT_DATETIME,
+                                      dayfirst=dayfirst, yearfirst=yearfirst)
+    except Exception as e:
+        # TODO: allow raise of errors within instead
+        raise DateParseError(e)
+    if parsed is None:
+        raise DateParseError("Could not parse %s" % date_string)
+    return parsed, parsed, reso
+
+
+cdef inline object _parse_dateabbr_string(object date_string, object default,
+                                          object freq):
+    cdef:
+        object ret
+        int year, quarter, month, mnum, date_len
+
+    # special handling for possibilities eg, 2Q2005, 2Q05, 2005Q1, 05Q1
+
+    if date_string in _nat_strings:
+        return NaT, NaT, ''
+
+    date_string = date_string.upper()
+    date_len = len(date_string)
+
+    if date_len == 4:
+        # parse year only like 2000
+        try:
+            ret = default.replace(year=int(date_string))
+            return ret, ret, 'year'
+        except ValueError:
+            pass
+
+    try:
+        if 4 <= date_len <= 7:
+            i = date_string.index('Q', 1, 6)
+            if i == 1:
+                quarter = int(date_string[0])
+                if date_len == 4 or (date_len == 5 and date_string[i + 1] == '-'):
+                    # r'(\d)Q-?(\d\d)')
+                    year = 2000 + int(date_string[-2:])
+                elif date_len == 6 or (date_len == 7 and date_string[i + 1] == '-'):
+                    # r'(\d)Q-?(\d\d\d\d)')
+                    year = int(date_string[-4:])
+                else:
+                    raise ValueError
+            elif i == 2 or i == 3:
+                # r'(\d\d)-?Q(\d)'
+                if date_len == 4 or (date_len == 5 and date_string[i - 1] == '-'):
+                    quarter = int(date_string[-1])
+                    year = 2000 + int(date_string[:2])
+                else:
+                    raise ValueError
+            elif i == 4 or i == 5:
+                if date_len == 6 or (date_len == 7 and date_string[i - 1] == '-'):
+                    # r'(\d\d\d\d)-?Q(\d)'
+                    quarter = int(date_string[-1])
+                    year = int(date_string[:4])
+                else:
+                    raise ValueError
+
+            if not (1 <= quarter <= 4):
+                msg = 'Incorrect quarterly string is given, quarter must be between 1 and 4: {0}'
+                raise DateParseError(msg.format(date_string))
+
+            if freq is not None:
+                # hack attack, #1228
+                try:
+                    mnum = _MONTH_NUMBERS[_get_rule_month(freq)] + 1
+                except (KeyError, ValueError):
+                    msg = 'Unable to retrieve month information from given freq: {0}'.format(freq)
+                    raise DateParseError(msg)
+
+                month = (mnum + (quarter - 1) * 3) % 12 + 1
+                if month > mnum:
+                    year -= 1
+            else:
+                month = (quarter - 1) * 3 + 1
+
+            ret = default.replace(year=year, month=month)
+            return ret, ret, 'quarter'
+
+    except DateParseError:
+        raise
+    except ValueError:
+        pass
+
+    if date_len == 6 and (freq == 'M' or getattr(freq, 'rule_code', None) == 'M'):
+        year = int(date_string[:4])
+        month = int(date_string[4:6])
+        try:
+            ret = default.replace(year=year, month=month)
+            return ret, ret, 'month'
+        except ValueError:
+            pass
+
+    for pat in ['%Y-%m', '%m-%Y', '%b %Y', '%b-%Y']:
+        try:
+            ret = datetime.strptime(date_string, pat)
+            return ret, ret, 'month'
+        except ValueError:
+            pass
+
+    raise ValueError('Unable to parse {0}'.format(date_string))
+
+
+def dateutil_parse(object timestr, object default, ignoretz=False,
+                   tzinfos=None, **kwargs):
+    """ lifted from dateutil to get resolution"""
+
+    cdef:
+        object fobj, res, attr, ret, tzdata
+        object reso = None
+        dict repl = {}
+
+    fobj = StringIO(str(timestr))
+    res = DEFAULTPARSER._parse(fobj, **kwargs)
+
+    # dateutil 2.2 compat
+    if isinstance(res, tuple):
+        res, _ = res
+
+    if res is None:
+        msg = "Unknown datetime string format, unable to parse: {0}"
+        raise ValueError(msg.format(timestr))
+
+    for attr in ["year", "month", "day", "hour",
+                 "minute", "second", "microsecond"]:
+        value = getattr(res, attr)
+        if value is not None:
+            repl[attr] = value
+            reso = attr
+
+    if reso is None:
+        msg = "Unable to parse datetime string: {0}"
+        raise ValueError(msg.format(timestr))
+
+    if reso == 'microsecond':
+        if repl['microsecond'] == 0:
+            reso = 'second'
+        elif repl['microsecond'] % 1000 == 0:
+            reso = 'millisecond'
+
+    ret = default.replace(**repl)
+    if res.weekday is not None and not res.day:
+        ret = ret + relativedelta.relativedelta(weekday=res.weekday)
+    if not ignoretz:
+        if callable(tzinfos) or tzinfos and res.tzname in tzinfos:
+            if callable(tzinfos):
+                tzdata = tzinfos(res.tzname, res.tzoffset)
+            else:
+                tzdata = tzinfos.get(res.tzname)
+            if isinstance(tzdata, datetime.tzinfo):
+                tzinfo = tzdata
+            elif isinstance(tzdata, string_types):
+                tzinfo = _dateutil_tzstr(tzdata)
+            elif isinstance(tzdata, int):
+                tzinfo = tzoffset(res.tzname, tzdata)
+            else:
+                raise ValueError("offset must be tzinfo subclass, "
+                                 "tz string, or int offset")
+            ret = ret.replace(tzinfo=tzinfo)
+        elif res.tzname and res.tzname in time.tzname:
+            ret = ret.replace(tzinfo=_dateutil_tzlocal())
+        elif res.tzoffset == 0:
+            ret = ret.replace(tzinfo=_dateutil_tzutc())
+        elif res.tzoffset:
+            ret = ret.replace(tzinfo=tzoffset(res.tzname, res.tzoffset))
+    return ret, reso
+
+
+# const for parsers
+
+_DEFAULT_DATETIME = datetime(1, 1, 1).replace(hour=0, minute=0, second=0, microsecond=0)
+_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL',
+           'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+_MONTH_NUMBERS = dict((k, i) for i, k in enumerate(_MONTHS))
+_MONTH_ALIASES = dict((k + 1, v) for k, v in enumerate(_MONTHS))
+
+
+cpdef object _get_rule_month(object source, object default='DEC'):
+    """
+    Return starting month of given freq, default is December.
+
+    Example
+    -------
+    >>> _get_rule_month('D')
+    'DEC'
+
+    >>> _get_rule_month('A-JAN')
+    'JAN'
+    """
+    if hasattr(source, 'freqstr'):
+        source = source.freqstr
+    source = source.upper()
+    if '-' not in source:
+        return default
+    else:
+        return source.split('-')[1]
+
+
+cpdef array_to_datetime(ndarray[object] values, errors='raise',
+                        dayfirst=False, yearfirst=False, freq=None,
+                        format=None, utc=None, unit=None,
+                        require_iso8601=False):
     cdef:
         Py_ssize_t i, n = len(values)
         object val, py_dt
@@ -1375,9 +1969,13 @@ def array_to_datetime(ndarray[object] values, raise_=False, dayfirst=False,
         ndarray[object] oresult
         pandas_datetimestruct dts
         bint utc_convert = bool(utc), seen_integer=0, seen_datetime=0
+        bint is_raise=errors=='raise', is_ignore=errors=='ignore', is_coerce=errors=='coerce'
         _TSObject _ts
         int64_t m = cast_from_unit(None,unit)
         int out_local = 0, out_tzoffset = 0
+
+    # specify error conditions
+    assert is_raise or is_ignore or is_coerce
 
     try:
         result = np.empty(n, dtype='M8[ns]')
@@ -1385,7 +1983,7 @@ def array_to_datetime(ndarray[object] values, raise_=False, dayfirst=False,
         for i in range(n):
             val = values[i]
             if _checknull_with_nat(val):
-                iresult[i] = iNaT
+                iresult[i] = NPY_NAT
             elif PyDateTime_Check(val):
                 seen_datetime=1
                 if val.tzinfo is not None:
@@ -1395,8 +1993,8 @@ def array_to_datetime(ndarray[object] values, raise_=False, dayfirst=False,
                         try:
                             _check_dts_bounds(&_ts.dts)
                         except ValueError:
-                            if coerce:
-                                iresult[i] = iNaT
+                            if is_coerce:
+                                iresult[i] = NPY_NAT
                                 continue
                             raise
                     else:
@@ -1410,8 +2008,8 @@ def array_to_datetime(ndarray[object] values, raise_=False, dayfirst=False,
                     try:
                         _check_dts_bounds(&dts)
                     except ValueError:
-                        if coerce:
-                            iresult[i] = iNaT
+                        if is_coerce:
+                            iresult[i] = NPY_NAT
                             continue
                         raise
             elif PyDate_Check(val):
@@ -1420,46 +2018,45 @@ def array_to_datetime(ndarray[object] values, raise_=False, dayfirst=False,
                     _check_dts_bounds(&dts)
                     seen_datetime=1
                 except ValueError:
-                    if coerce:
-                        iresult[i] = iNaT
+                    if is_coerce:
+                        iresult[i] = NPY_NAT
                         continue
                     raise
             elif util.is_datetime64_object(val):
-                if val is np_NaT or val.view('i8') == iNaT:
-                    iresult[i] = iNaT
+                if get_datetime64_value(val) == NPY_NAT:
+                    iresult[i] = NPY_NAT
                 else:
                     try:
                         iresult[i] = _get_datetime64_nanos(val)
                         seen_datetime=1
                     except ValueError:
-                        if coerce:
-                            iresult[i] = iNaT
+                        if is_coerce:
+                            iresult[i] = NPY_NAT
                             continue
                         raise
 
             # if we are coercing, dont' allow integers
-            elif is_integer_object(val) and not coerce:
-                if val == iNaT:
-                    iresult[i] = iNaT
+            elif is_integer_object(val) and not is_coerce:
+                if val == NPY_NAT:
+                    iresult[i] = NPY_NAT
                 else:
                     iresult[i] = val*m
                     seen_integer=1
-            elif is_float_object(val) and not coerce:
-                if val != val or val == iNaT:
-                    iresult[i] = iNaT
+            elif is_float_object(val) and not is_coerce:
+                if val != val or val == NPY_NAT:
+                    iresult[i] = NPY_NAT
                 else:
                     iresult[i] = cast_from_unit(val,unit)
                     seen_integer=1
             else:
                 try:
                     if len(val) == 0:
-                        iresult[i] = iNaT
+                        iresult[i] = NPY_NAT
                         continue
 
                     elif val in _nat_strings:
-                        iresult[i] = iNaT
+                        iresult[i] = NPY_NAT
                         continue
-
                     _string_to_dts(val, &dts, &out_local, &out_tzoffset)
                     value = pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &dts)
                     if out_local == 1:
@@ -1468,49 +2065,64 @@ def array_to_datetime(ndarray[object] values, raise_=False, dayfirst=False,
                     iresult[i] = value
                     _check_dts_bounds(&dts)
                 except ValueError:
-                    try:
-                        py_dt = parse_datetime_string(val, dayfirst=dayfirst)
-                    except Exception:
-                        if coerce:
-                            iresult[i] = iNaT
+                    # if requiring iso8601 strings, skip trying other formats
+                    if require_iso8601:
+                        if is_coerce:
+                            iresult[i] = NPY_NAT
                             continue
-                        raise TypeError
+                        elif is_raise:
+                            raise ValueError("time data %r does match format specified" %
+                                             (val,))
+                        else:
+                            return values
+
+                    try:
+                        py_dt = parse_datetime_string(val, dayfirst=dayfirst,
+                                                      yearfirst=yearfirst, freq=freq)
+                    except Exception:
+                        if is_coerce:
+                            iresult[i] = NPY_NAT
+                            continue
+                        raise TypeError("invalid string coercion to datetime")
 
                     try:
                         _ts = convert_to_tsobject(py_dt, None, None)
                         iresult[i] = _ts.value
                     except ValueError:
-                        if coerce:
-                            iresult[i] = iNaT
+                        if is_coerce:
+                            iresult[i] = NPY_NAT
                             continue
                         raise
                 except:
-                    if coerce:
-                        iresult[i] = iNaT
+                    if is_coerce:
+                        iresult[i] = NPY_NAT
                         continue
                     raise
 
         # don't allow mixed integers and datetime like
-        # higher levels can catch and coerce to object, for
+        # higher levels can catch and is_coerce to object, for
         # example
         if seen_integer and seen_datetime:
             raise ValueError("mixed datetimes and integers in passed array")
 
         return result
     except OutOfBoundsDatetime:
-        if raise_:
+        if is_raise:
             raise
 
         oresult = np.empty(n, dtype=object)
         for i in range(n):
             val = values[i]
 
-            # set as nan if is even a datetime NaT
+            # set as nan except if its a NaT
             if _checknull_with_nat(val):
-                oresult[i] = np.nan
-            elif util.is_datetime64_object(val):
-                if val is np_NaT or val.view('i8') == iNaT:
+                if val.view('i8') == NPY_NAT:
+                    oresult[i] = NaT
+                else:
                     oresult[i] = np.nan
+            elif util.is_datetime64_object(val):
+                if get_datetime64_value(val) == NPY_NAT:
+                    oresult[i] = NaT
                 else:
                     oresult[i] = val.item()
             else:
@@ -1529,20 +2141,44 @@ def array_to_datetime(ndarray[object] values, raise_=False, dayfirst=False,
                     oresult[i] = 'NaT'
                     continue
                 try:
-                    oresult[i] = parse_datetime_string(val, dayfirst=dayfirst)
+                    oresult[i] = parse_datetime_string(val, dayfirst=dayfirst,
+                                                    yearfirst=yearfirst, freq=freq)
                     _pydatetime_to_dts(oresult[i], &dts)
                     _check_dts_bounds(&dts)
                 except Exception:
-                    if raise_:
+                    if is_raise:
                         raise
                     return values
                     # oresult[i] = val
             else:
-                if raise_:
+                if is_raise:
                     raise
                 return values
 
         return oresult
+
+def parse_str_array_to_datetime(ndarray values, dayfirst=False,
+                                yearfirst=False, object freq=None):
+    """Shortcut to parse str array for quicker DatetimeIndex construction"""
+    cdef:
+        Py_ssize_t i, n = len(values)
+        object val, py_dt
+        ndarray[int64_t] iresult
+        _TSObject _ts
+
+    iresult = np.empty(n, dtype='i8')
+
+    for i in range(n):
+        val = values[i]
+        try:
+            py_dt = parse_datetime_string(val, dayfirst=dayfirst,
+                                          yearfirst=yearfirst, freq=freq)
+        except Exception:
+            raise ValueError
+        _ts = convert_to_tsobject(py_dt, None, None)
+        iresult[i] = _ts.value
+
+    return iresult
 
 # Similar to Timestamp/datetime, this is a construction requirement for timedeltas
 # we need to do object instantiation in python
@@ -1558,7 +2194,10 @@ cdef class _Timedelta(timedelta):
         int64_t _sign, _d, _h, _m, _s, _ms, _us, _ns
 
     def __hash__(_Timedelta self):
-        return hash(self.value)
+        if self._has_ns():
+            return hash(self.value)
+        else:
+            return timedelta.__hash__(self)
 
     def __richcmp__(_Timedelta self, object other, int op):
         cdef:
@@ -1588,6 +2227,8 @@ cdef class _Timedelta(timedelta):
                         raise TypeError('Cannot compare type %r with type %r' %
                                         (type(self).__name__,
                                          type(other).__name__))
+                if isinstance(other, np.ndarray):
+                    return PyObject_RichCompare(np.array([self]), other, op)
                 return PyObject_RichCompare(other, self, _reverse_ops[op])
             else:
                 if op == Py_EQ:
@@ -1607,63 +2248,63 @@ cdef class _Timedelta(timedelta):
         cdef float64_t frac
 
         if self.is_populated:
-           return
+            return
 
         # put frac in seconds
-        frac   = float(ivalue)/1e9
+        frac = float(ivalue)/1e9
         if frac < 0:
-           self._sign = -1
+            self._sign = -1
 
-           # even fraction
-           if int(-frac/86400) != -frac/86400.0:
-               self._d = int(-frac/86400.0+1)
-               frac += 86400*self._d
-           else:
-               frac = -frac
+            # even fraction
+            if int(-frac/86400) != -frac/86400.0:
+                self._d = int(-frac/86400.0+1)
+                frac += 86400*self._d
+            else:
+                frac = -frac
         else:
-           self._sign = 1
-           self._d = 0
+            self._sign = 1
+            self._d = 0
 
         if frac >= 86400:
-           self._d += int(frac / 86400)
-           frac   -= self._d * 86400
+            self._d += int(frac / 86400)
+            frac   -= self._d * 86400
 
         if frac >= 3600:
-           self._h  = int(frac / 3600)
-           frac    -= self._h * 3600
+            self._h  = int(frac / 3600)
+            frac    -= self._h * 3600
         else:
-           self._h = 0
+            self._h = 0
 
         if frac >= 60:
-           self._m = int(frac / 60)
-           frac   -= self._m * 60
+            self._m = int(frac / 60)
+            frac   -= self._m * 60
         else:
-           self._m = 0
+            self._m = 0
 
         if frac >= 0:
-           self._s = int(frac)
-           frac   -= self._s
+            self._s = int(frac)
+            frac   -= self._s
         else:
-           self._s = 0
+            self._s = 0
 
         if frac != 0:
 
-           # reset so we don't lose precision
-           sfrac = int((self._h*3600 + self._m*60 + self._s)*1e9)
-           if self._sign < 0:
-               ifrac = ivalue + self._d*DAY_NS - sfrac
-           else:
-               ifrac = ivalue - (self._d*DAY_NS + sfrac)
+            # reset so we don't lose precision
+            sfrac = int((self._h*3600 + self._m*60 + self._s)*1e9)
+            if self._sign < 0:
+                ifrac = ivalue + self._d*DAY_NS - sfrac
+            else:
+                ifrac = ivalue - (self._d*DAY_NS + sfrac)
 
-           self._ms = int(ifrac/1e6)
-           ifrac -= self._ms*1000*1000
-           self._us = int(ifrac/1e3)
-           ifrac -= self._us*1000
-           self._ns = ifrac
+            self._ms = int(ifrac/1e6)
+            ifrac -= self._ms*1000*1000
+            self._us = int(ifrac/1e3)
+            ifrac -= self._us*1000
+            self._ns = ifrac
         else:
-           self._ms = 0
-           self._us = 0
-           self._ns = 0
+            self._ms = 0
+            self._us = 0
+            self._ns = 0
 
         self.is_populated = 1
 
@@ -1673,6 +2314,9 @@ cdef class _Timedelta(timedelta):
         note: we lose nanosecond resolution if any
         """
         return timedelta(microseconds=int(self.value)/1000)
+
+    cpdef bint _has_ns(self):
+        return self.value % 1000 != 0
 
 # components named tuple
 Components = collections.namedtuple('Components',['days','hours','minutes','seconds','milliseconds','microseconds','nanoseconds'])
@@ -1718,16 +2362,16 @@ class Timedelta(_Timedelta):
             kwargs = dict([ (k, _to_py_int_float(v)) for k, v in iteritems(kwargs) ])
 
             try:
-                value = timedelta(**kwargs)
+                nano = kwargs.pop('nanoseconds',0)
+                value = convert_to_timedelta64(timedelta(**kwargs),'ns',False) + nano
             except TypeError as e:
                 raise ValueError("cannot construct a TimeDelta from the passed arguments, allowed keywords are "
-                                 "[days, seconds, microseconds, milliseconds, minutes, hours, weeks]")
+                                 "[weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds]")
 
         if isinstance(value, Timedelta):
             value = value.value
         elif util.is_string_object(value):
-            from pandas import to_timedelta
-            value = to_timedelta(value,unit=unit,box=False)
+            value = np.timedelta64(parse_timedelta_string(value, False))
         elif isinstance(value, timedelta):
             value = convert_to_timedelta64(value,'ns',False)
         elif isinstance(value, np.timedelta64):
@@ -1773,53 +2417,59 @@ class Timedelta(_Timedelta):
 
         self._ensure_components()
         if self._ns:
-           return "ns"
+           return "N"
         elif self._us:
-           return "us"
+           return "U"
         elif self._ms:
-           return "ms"
+           return "L"
         elif self._s:
-           return "s"
+           return "S"
         elif self._m:
-           return "m"
+           return "T"
         elif self._h:
-           return "h"
-        elif self._d:
+           return "H"
+        else:
            return "D"
-        raise ValueError("invalid resolution")
 
-    def round(self, reso):
+    def _round(self, freq, rounder):
+
+        cdef int64_t result, unit
+
+        from pandas.tseries.frequencies import to_offset
+        unit = to_offset(freq).nanos
+        result = unit*rounder(self.value/float(unit))
+        return Timedelta(result,unit='ns')
+
+    def round(self, freq):
         """
-        return a new Timedelta rounded to this resolution
+        return a new Timedelta rounded to this resolution.
+
 
         Parameters
         ----------
-        reso : a string indicating the rouding resolution, accepting values
-           d,h,m,s,ms,us
-
+        freq : a freq string indicating the rounding resolution
         """
-        cdef int64_t frac, value = np.abs(self.value)
+        return self._round(freq, np.round)
 
-        self._ensure_components()
-        frac = int(self._ms*1e6 + self._us*1e3+ self._ns)
-        if reso == 'us':
-           value -= self._ns
-        elif reso == 'ms':
-           value -= self._us*1000 + self._ns
-        elif reso == 's':
-           value -= frac
-        elif reso == 'm':
-           value -= int(self._s*1e9) + frac
-        elif reso == 'h':
-           value -= int((60*self._m + self._s)*1e9) + frac
-        elif reso == 'd' or reso == 'D':
-           value -= int((3600*self._h + 60*self._m + self._s)*1e9) + frac
-        else:
-           raise ValueError("invalid resolution")
+    def floor(self, freq):
+        """
+        return a new Timedelta floored to this resolution
 
-        if self._sign < 0:
-           value *= -1
-        return Timedelta(value,unit='ns')
+        Parameters
+        ----------
+        freq : a freq string indicating the flooring resolution
+        """
+        return self._round(freq, np.floor)
+
+    def ceil(self, freq):
+        """
+        return a new Timedelta ceiled to this resolution
+
+        Parameters
+        ----------
+        freq : a freq string indicating the ceiling resolution
+        """
+        return self._round(freq, np.ceil)
 
     def _repr_base(self, format=None):
         """
@@ -1892,47 +2542,51 @@ class Timedelta(_Timedelta):
 
     @property
     def days(self):
-        """ The days for the Timedelta """
+        """
+        Number of Days
+
+        .components will return the shown components
+        """
         self._ensure_components()
         if self._sign < 0:
             return -1*self._d
         return self._d
 
     @property
-    def hours(self):
-        """ The hours for the Timedelta """
-        self._ensure_components()
-        return self._h
-
-    @property
-    def minutes(self):
-        """ The minutes for the Timedelta """
-        self._ensure_components()
-        return self._m
-
-    @property
     def seconds(self):
-        """ The seconds for the Timedelta """
-        self._ensure_components()
-        return self._s
+        """
+        Number of seconds (>= 0 and less than 1 day).
 
-    @property
-    def milliseconds(self):
-        """ The milliseconds for the Timedelta """
+        .components will return the shown components
+        """
         self._ensure_components()
-        return self._ms
+        return self._h*3600 + self._m*60 + self._s
 
     @property
     def microseconds(self):
-        """ The microseconds for the Timedelta """
+        """
+        Number of microseconds (>= 0 and less than 1 second).
+
+        .components will return the shown components
+        """
         self._ensure_components()
-        return self._us
+        return self._ms*1000 + self._us
 
     @property
     def nanoseconds(self):
-        """ The nanoseconds for the Timedelta """
+        """
+        Number of nanoseconds (>= 0 and less than 1 microsecond).
+
+        .components will return the shown components
+        """
         self._ensure_components()
         return self._ns
+
+    def total_seconds(self):
+        """
+        Total duration of timedelta in seconds (to ns precision)
+        """
+        return 1e-9*self.value
 
     def __setstate__(self, state):
         (value) = state
@@ -2009,8 +2663,8 @@ class Timedelta(_Timedelta):
         if other is NaT:
             return NaT
 
-        # only integers allowed
-        if not is_integer_object(other):
+        # only integers and floats allowed
+        if not (is_integer_object(other) or is_float_object(other)):
            return NotImplemented
 
         return Timedelta(other*self.value, unit='ns')
@@ -2022,8 +2676,8 @@ class Timedelta(_Timedelta):
         if hasattr(other, 'dtype'):
             return self.to_timedelta64() / other
 
-        # pure integers
-        if is_integer_object(other):
+        # integers or floats
+        if is_integer_object(other) or is_float_object(other):
            return Timedelta(self.value/other, unit='ns')
 
         if not self._validate_ops_compat(other):
@@ -2031,7 +2685,7 @@ class Timedelta(_Timedelta):
 
         other = Timedelta(other)
         if other is NaT:
-            return NaT
+            return np.nan
         return self.value/float(other.value)
 
     def __rtruediv__(self, other):
@@ -2068,29 +2722,311 @@ class Timedelta(_Timedelta):
     __pos__ = _op_unary_method(lambda x: x, '__pos__')
     __abs__ = _op_unary_method(lambda x: abs(x), '__abs__')
 
+
+# Resolution is in nanoseconds
+Timedelta.min = Timedelta(np.iinfo(np.int64).min+1, 'ns')
+Timedelta.max = Timedelta(np.iinfo(np.int64).max, 'ns')
+
 cdef PyTypeObject* td_type = <PyTypeObject*> Timedelta
 
 cdef inline bint is_timedelta(object o):
     return Py_TYPE(o) == td_type # isinstance(o, Timedelta)
 
-def array_to_timedelta64(ndarray[object] values, unit='ns', coerce=False):
+def array_to_timedelta64(ndarray[object] values, unit='ns', errors='raise'):
     """ convert an ndarray to an array of ints that are timedeltas
         force conversion if coerce = True,
         else will raise if cannot convert """
     cdef:
         Py_ssize_t i, n
         ndarray[int64_t] iresult
+        bint is_raise=errors=='raise', is_ignore=errors=='ignore', is_coerce=errors=='coerce'
+
+    assert is_raise or is_ignore or is_coerce
 
     n = values.shape[0]
     result = np.empty(n, dtype='m8[ns]')
     iresult = result.view('i8')
 
-    for i in range(n):
-        result[i] = convert_to_timedelta64(values[i], unit, coerce)
+    # usually we have all strings
+    # if so then we hit the fast path
+    try:
+        for i in range(n):
+            result[i] = parse_timedelta_string(values[i], is_coerce)
+    except:
+        for i in range(n):
+            result[i] = convert_to_timedelta64(values[i], unit, is_coerce)
     return iresult
 
-def convert_to_timedelta(object ts, object unit='ns', coerce=False):
-    return convert_to_timedelta64(ts, unit, coerce)
+
+def convert_to_timedelta(object ts, object unit='ns', errors='raise'):
+    cdef bint is_raise=errors=='raise', is_ignore=errors=='ignore', is_coerce=errors=='coerce'
+
+    assert is_raise or is_ignore or is_coerce
+    return convert_to_timedelta64(ts, unit, is_coerce)
+
+cdef dict timedelta_abbrevs = { 'D' : 'd',
+                                'd' : 'd',
+                                'days' : 'd',
+                                'day' : 'd',
+                                'hours' : 'h',
+                                'hour' : 'h',
+                                'hr' : 'h',
+                                'h' : 'h',
+                                'm' : 'm',
+                                'minute' : 'm',
+                                'min' : 'm',
+                                'minutes' : 'm',
+                                's' : 's',
+                                'seconds' : 's',
+                                'sec' : 's',
+                                'second' : 's',
+                                'ms' : 'ms',
+                                'milliseconds' : 'ms',
+                                'millisecond' : 'ms',
+                                'milli' : 'ms',
+                                'millis' : 'ms',
+                                'us' : 'us',
+                                'microseconds' : 'us',
+                                'microsecond' : 'us',
+                                'micro' : 'us',
+                                'micros' : 'us',
+                                'ns' : 'ns',
+                                'nanoseconds' : 'ns',
+                                'nano' : 'ns',
+                                'nanos' : 'ns',
+                                'nanosecond' : 'ns',
+                                }
+timedelta_abbrevs_map = timedelta_abbrevs
+
+cdef inline int64_t timedelta_as_neg(int64_t value, bint neg):
+    """
+
+    Parameters
+    ----------
+    value : int64_t of the timedelta value
+    neg : boolean if the a negative value
+    """
+    if neg:
+        return -value
+    return value
+
+cdef inline timedelta_from_spec(object number, object frac, object unit):
+    """
+
+    Parameters
+    ----------
+    number : a list of number digits
+    frac : a list of frac digits
+    unit : a list of unit characters
+    """
+    cdef object n
+
+    try:
+        unit = ''.join(unit)
+        unit = timedelta_abbrevs[unit.lower()]
+    except KeyError:
+        raise ValueError("invalid abbreviation: {0}".format(unit))
+
+    n = ''.join(number) + '.' + ''.join(frac)
+    return cast_from_unit(float(n), unit)
+
+cdef inline parse_timedelta_string(object ts, coerce=False):
+    """
+    Parse an regular format timedelta string
+
+    Return an int64_t or raise a ValueError on an invalid parse
+
+    if coerce, set a non-valid value to NaT
+
+    Return a ns based int64
+    """
+
+    cdef:
+        unicode c
+        bint neg=0, have_dot=0, have_value=0, have_hhmmss=0
+        object current_unit=None
+        int64_t result=0, m=0, r
+        list number=[], frac=[], unit=[]
+
+    # neg : tracks if we have a leading negative for the value
+    # have_dot : tracks if we are processing a dot (either post hhmmss or inside an expression)
+    # have_value : track if we have at least 1 leading unit
+    # have_hhmmss : tracks if we have a regular format hh:mm:ss
+
+    if ts in _nat_strings or not len(ts):
+        return NPY_NAT
+
+    # decode ts if necessary
+    if not PyUnicode_Check(ts) and not PY3:
+        ts = str(ts).decode('utf-8')
+
+    for c in ts:
+
+        # skip whitespace / commas
+        if c == ' ' or c == ',':
+            pass
+
+        # positive signs are ignored
+        elif c == '+':
+            pass
+
+        # neg
+        elif c == '-':
+
+            if neg or have_value or have_hhmmss:
+                raise ValueError("only leading negative signs are allowed")
+
+            neg = 1
+
+        # number (ascii codes)
+        elif ord(c) >= 48 and ord(c) <= 57:
+
+            if have_dot:
+
+                # we found a dot, but now its just a fraction
+                if len(unit):
+                    number.append(c)
+                    have_dot = 0
+                else:
+                    frac.append(c)
+
+            elif not len(unit):
+                number.append(c)
+
+            else:
+
+                try:
+                    r = timedelta_from_spec(number, frac, unit)
+                except ValueError:
+                    if coerce:
+                        return NPY_NAT
+                    raise
+                unit, number, frac = [], [c], []
+
+                result += timedelta_as_neg(r, neg)
+
+        # hh:mm:ss.
+        elif c == ':':
+
+            # we flip this off if we have a leading value
+            if have_value:
+                neg = 0
+
+            # we are in the pattern hh:mm:ss pattern
+            if len(number):
+                if current_unit is None:
+                    current_unit = 'h'
+                    m = 1000000000L * 3600
+                elif current_unit == 'h':
+                    current_unit = 'm'
+                    m = 1000000000L * 60
+                elif current_unit == 'm':
+                    current_unit = 's'
+                    m = 1000000000L
+                r = <int64_t> int(''.join(number)) * m
+                result += timedelta_as_neg(r, neg)
+                have_hhmmss = 1
+            else:
+                if coerce:
+                    return NPY_NAT
+                raise ValueError("expecting hh:mm:ss format, received: {0}".format(ts))
+            unit, number = [], []
+
+        # after the decimal point
+        elif c == '.':
+
+            if len(number) and current_unit is not None:
+
+                # by definition we had something like
+                # so we need to evaluate the final field from a
+                # hh:mm:ss (so current_unit is 'm')
+                if current_unit != 'm':
+                    raise ValueError("expected hh:mm:ss format before .")
+                m = 1000000000L
+                r = <int64_t> int(''.join(number)) * m
+                result += timedelta_as_neg(r, neg)
+                have_value = 1
+                unit, number, frac = [], [], []
+
+            have_dot = 1
+
+        # unit
+        else:
+            unit.append(c)
+            have_value = 1
+            have_dot = 0
+
+    # we had a dot, but we have a fractional
+    # value since we have an unit
+    if have_dot and len(unit):
+        try:
+            r = timedelta_from_spec(number, frac, unit)
+            result += timedelta_as_neg(r, neg)
+        except ValueError:
+            if coerce:
+                return NPY_NAT
+            raise
+
+    # we have a dot as part of a regular format
+    # e.g. hh:mm:ss.fffffff
+    elif have_dot:
+
+        if (len(number) or len(frac)) and not len(unit) and current_unit is None:
+            if coerce:
+                return NPY_NAT
+            raise ValueError("no units specified")
+
+        if len(frac) > 0 and len(frac) <= 3:
+            m = 10**(3-len(frac)) * 1000L * 1000L
+        elif len(frac) > 3 and len(frac) <= 6:
+            m = 10**(6-len(frac)) * 1000L
+        else:
+            m = 10**(9-len(frac))
+
+        r = <int64_t> int(''.join(frac)) * m
+        result += timedelta_as_neg(r, neg)
+
+    # we have a regular format
+    # we must have seconds at this point (hence the unit is still 'm')
+    elif current_unit is not None:
+        if current_unit != 'm':
+            raise ValueError("expected hh:mm:ss format")
+        m = 1000000000L
+        r = <int64_t> int(''.join(number)) * m
+        result += timedelta_as_neg(r, neg)
+
+    # we have a last abbreviation
+    elif len(unit):
+
+        if len(number):
+            try:
+                r = timedelta_from_spec(number, frac, unit)
+                result += timedelta_as_neg(r, neg)
+            except ValueError:
+                if coerce:
+                    return NPY_NAT
+                raise
+        else:
+            if coerce:
+                return NPY_NAT
+            raise ValueError("unit abbreviation w/o a number")
+
+    # treat as nanoseconds
+    # but only if we don't have anything else
+    else:
+
+        if have_value:
+            raise ValueError("have leftover units")
+        if len(number):
+            try:
+                r = timedelta_from_spec(number, frac, 'ns')
+                result += timedelta_as_neg(r, neg)
+            except ValueError:
+                if coerce:
+                    return NPY_NAT
+                raise
+
+    return result
 
 cdef inline convert_to_timedelta64(object ts, object unit, object coerce):
     """
@@ -2111,19 +3047,19 @@ cdef inline convert_to_timedelta64(object ts, object unit, object coerce):
     # handle the numpy < 1.7 case
     """
     if _checknull_with_nat(ts):
-        return np.timedelta64(iNaT)
+        return np.timedelta64(NPY_NAT)
     elif isinstance(ts, Timedelta):
         # already in the proper format
         ts = np.timedelta64(ts.value)
     elif util.is_datetime64_object(ts):
         # only accept a NaT here
-        if ts.astype('int64') == iNaT:
-            return np.timedelta64(iNaT)
+        if ts.astype('int64') == NPY_NAT:
+            return np.timedelta64(NPY_NAT)
     elif isinstance(ts, np.timedelta64):
         ts = ts.astype("m8[{0}]".format(unit.lower()))
     elif is_integer_object(ts):
-        if ts == iNaT:
-            return np.timedelta64(iNaT)
+        if ts == NPY_NAT:
+            return np.timedelta64(NPY_NAT)
         else:
             if util.is_array(ts):
                 ts = ts.astype('int64').item()
@@ -2141,10 +3077,7 @@ cdef inline convert_to_timedelta64(object ts, object unit, object coerce):
             ts = cast_from_unit(ts, unit)
             ts = np.timedelta64(ts)
     elif util.is_string_object(ts):
-        if ts in _nat_strings or coerce:
-            return np.timedelta64(iNaT)
-        else:
-            raise ValueError("Invalid type for timedelta scalar: %s" % type(ts))
+        ts = np.timedelta64(parse_timedelta_string(ts, coerce))
     elif hasattr(ts,'delta'):
         ts = np.timedelta64(_delta_to_nanoseconds(ts),'ns')
 
@@ -2152,11 +3085,11 @@ cdef inline convert_to_timedelta64(object ts, object unit, object coerce):
         ts = np.timedelta64(ts)
     elif not isinstance(ts, np.timedelta64):
         if coerce:
-            return np.timedelta64(iNaT)
+            return np.timedelta64(NPY_NAT)
         raise ValueError("Invalid type for timedelta scalar: %s" % type(ts))
     return ts.astype('timedelta64[ns]')
 
-def array_strptime(ndarray[object] values, object fmt, bint exact=True, bint coerce=False):
+def array_strptime(ndarray[object] values, object fmt, bint exact=True, errors='raise'):
     """
     Parameters
     ----------
@@ -2175,6 +3108,9 @@ def array_strptime(ndarray[object] values, object fmt, bint exact=True, bint coe
         int64_t us, ns
         object val, group_key, ampm, found
         dict found_key
+        bint is_raise=errors=='raise', is_ignore=errors=='ignore', is_coerce=errors=='coerce'
+
+    assert is_raise or is_ignore or is_coerce
 
     global _TimeRE_cache, _regex_cache
     with _cache_lock:
@@ -2234,11 +3170,11 @@ def array_strptime(ndarray[object] values, object fmt, bint exact=True, bint coe
         val = values[i]
         if util.is_string_object(val):
             if val in _nat_strings:
-                iresult[i] = iNaT
+                iresult[i] = NPY_NAT
                 continue
         else:
             if _checknull_with_nat(val):
-                iresult[i] = iNaT
+                iresult[i] = NPY_NAT
                 continue
             else:
                 val = str(val)
@@ -2247,14 +3183,14 @@ def array_strptime(ndarray[object] values, object fmt, bint exact=True, bint coe
         if exact:
             found = format_regex.match(val)
             if not found:
-                if coerce:
-                    iresult[i] = iNaT
+                if is_coerce:
+                    iresult[i] = NPY_NAT
                     continue
                 raise ValueError("time data %r does not match format %r (match)" %
                                  (values[i], fmt))
             if len(val) != found.end():
-                if coerce:
-                    iresult[i] = iNaT
+                if is_coerce:
+                    iresult[i] = NPY_NAT
                     continue
                 raise ValueError("unconverted data remains: %s" %
                                   values[i][found.end():])
@@ -2263,8 +3199,8 @@ def array_strptime(ndarray[object] values, object fmt, bint exact=True, bint coe
         else:
             found = format_regex.search(val)
             if not found:
-                if coerce:
-                    iresult[i] = iNaT
+                if is_coerce:
+                    iresult[i] = NPY_NAT
                     continue
                 raise ValueError("time data %r does not match format %r (search)" %
                                  (values[i], fmt))
@@ -2385,17 +3321,23 @@ def array_strptime(ndarray[object] values, object fmt, bint exact=True, bint coe
         # Cannot pre-calculate datetime_date() since can change in Julian
         # calculation and thus could have different value for the day of the wk
         # calculation.
-        if julian == -1:
-            # Need to add 1 to result since first day of the year is 1, not 0.
-            julian = datetime_date(year, month, day).toordinal() - \
-                      datetime_date(year, 1, 1).toordinal() + 1
-        else: # Assume that if they bothered to include Julian day it will
-            # be accurate.
-            datetime_result = datetime_date.fromordinal(
-                (julian - 1) + datetime_date(year, 1, 1).toordinal())
-            year = datetime_result.year
-            month = datetime_result.month
-            day = datetime_result.day
+        try:
+            if julian == -1:
+                # Need to add 1 to result since first day of the year is 1, not 0.
+                julian = datetime_date(year, month, day).toordinal() - \
+                          datetime_date(year, 1, 1).toordinal() + 1
+            else: # Assume that if they bothered to include Julian day it will
+                # be accurate.
+                datetime_result = datetime_date.fromordinal(
+                    (julian - 1) + datetime_date(year, 1, 1).toordinal())
+                year = datetime_result.year
+                month = datetime_result.month
+                day = datetime_result.day
+        except ValueError:
+                if is_coerce:
+                    iresult[i] = NPY_NAT
+                    continue
+                raise
         if weekday == -1:
             weekday = datetime_date(year, month, day).weekday()
 
@@ -2412,8 +3354,8 @@ def array_strptime(ndarray[object] values, object fmt, bint exact=True, bint coe
         try:
             _check_dts_bounds(&dts)
         except ValueError:
-            if coerce:
-                iresult[i] = iNaT
+            if is_coerce:
+                iresult[i] = NPY_NAT
                 continue
             raise
 
@@ -2427,9 +3369,6 @@ cdef inline _get_datetime64_nanos(object val):
         npy_datetime ival
 
     unit = get_datetime64_unit(val)
-    if unit == 3:
-        raise ValueError('NumPy 1.6.1 business freq not supported')
-
     ival = get_datetime64_value(val)
 
     if unit != PANDAS_FR_ns:
@@ -2442,6 +3381,9 @@ cdef inline _get_datetime64_nanos(object val):
 cpdef inline int64_t cast_from_unit(object ts, object unit) except? -1:
     """ return a casting of the unit represented to nanoseconds
         round the fractional part of a float to our precision, p """
+    cdef:
+        int64_t m
+        int p
 
     if unit == 'D' or unit == 'd':
         m = 1000000000L * 86400
@@ -2497,13 +3439,13 @@ def cast_to_nanoseconds(ndarray arr):
         return result
 
     unit = get_datetime64_unit(arr.flat[0])
-    if unit == 3:
-        raise ValueError('NumPy 1.6.1 business freq not supported')
-
     for i in range(n):
-        pandas_datetime_to_datetimestruct(ivalues[i], unit, &dts)
-        iresult[i] = pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &dts)
-        _check_dts_bounds(&dts)
+        if ivalues[i] != NPY_NAT:
+            pandas_datetime_to_datetimestruct(ivalues[i], unit, &dts)
+            iresult[i] = pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &dts)
+            _check_dts_bounds(&dts)
+        else:
+            iresult[i] = NPY_NAT
 
     return result
 
@@ -2541,7 +3483,7 @@ except:
 
 def tz_convert(ndarray[int64_t] vals, object tz1, object tz2):
     cdef:
-        ndarray[int64_t] utc_dates, result, trans, deltas
+        ndarray[int64_t] utc_dates, tt, result, trans, deltas
         Py_ssize_t i, pos, n = len(vals)
         int64_t v, offset
         pandas_datetimestruct dts
@@ -2560,49 +3502,72 @@ def tz_convert(ndarray[int64_t] vals, object tz1, object tz2):
         if _is_tzlocal(tz1):
             for i in range(n):
                 v = vals[i]
-                pandas_datetime_to_datetimestruct(v, PANDAS_FR_ns, &dts)
-                dt = datetime(dts.year, dts.month, dts.day, dts.hour,
-                              dts.min, dts.sec, dts.us, tz1)
-                delta = (int(total_seconds(_get_utcoffset(tz1, dt)))
-                         * 1000000000)
-                utc_dates[i] = v - delta
+                if v == NPY_NAT:
+                    utc_dates[i] = NPY_NAT
+                else:
+                    pandas_datetime_to_datetimestruct(v, PANDAS_FR_ns, &dts)
+                    dt = datetime(dts.year, dts.month, dts.day, dts.hour,
+                                  dts.min, dts.sec, dts.us, tz1)
+                    delta = (int(total_seconds(_get_utcoffset(tz1, dt)))
+                             * 1000000000)
+                    utc_dates[i] = v - delta
         else:
             trans, deltas, typ = _get_dst_info(tz1)
 
+            # all-NaT
+            tt = vals[vals!=NPY_NAT]
+            if not len(tt):
+                return vals
+
             trans_len = len(trans)
-            pos = trans.searchsorted(vals[0]) - 1
+            pos = trans.searchsorted(tt[0]) - 1
             if pos < 0:
                 raise ValueError('First time before start of DST info')
 
             offset = deltas[pos]
             for i in range(n):
                 v = vals[i]
-                while pos + 1 < trans_len and v >= trans[pos + 1]:
-                    pos += 1
-                    offset = deltas[pos]
-                utc_dates[i] = v - offset
+                if v == NPY_NAT:
+                    utc_dates[i] = NPY_NAT
+                else:
+                    while pos + 1 < trans_len and v >= trans[pos + 1]:
+                        pos += 1
+                        offset = deltas[pos]
+                    utc_dates[i] = v - offset
     else:
         utc_dates = vals
 
     if _get_zone(tz2) == 'UTC':
         return utc_dates
 
-    result = np.empty(n, dtype=np.int64)
+    result = np.zeros(n, dtype=np.int64)
     if _is_tzlocal(tz2):
         for i in range(n):
             v = utc_dates[i]
-            pandas_datetime_to_datetimestruct(v, PANDAS_FR_ns, &dts)
-            dt = datetime(dts.year, dts.month, dts.day, dts.hour,
-                          dts.min, dts.sec, dts.us, tz2)
-            delta = int(total_seconds(_get_utcoffset(tz2, dt))) * 1000000000
-            result[i] = v + delta
+            if v == NPY_NAT:
+                result[i] = NPY_NAT
+            else:
+                pandas_datetime_to_datetimestruct(v, PANDAS_FR_ns, &dts)
+                dt = datetime(dts.year, dts.month, dts.day, dts.hour,
+                              dts.min, dts.sec, dts.us, tz2)
+                delta = int(total_seconds(_get_utcoffset(tz2, dt))) * 1000000000
+                result[i] = v + delta
             return result
 
     # Convert UTC to other timezone
     trans, deltas, typ = _get_dst_info(tz2)
     trans_len = len(trans)
 
-    pos = trans.searchsorted(utc_dates[0]) - 1
+    # if all NaT, return all NaT
+    if (utc_dates==NPY_NAT).all():
+        return utc_dates
+
+    # use first non-NaT element
+    # if all-NaT, return all-NaT
+    if (result==NPY_NAT).all():
+        return result
+
+    pos = trans.searchsorted(utc_dates[utc_dates!=NPY_NAT][0]) - 1
     if pos < 0:
         raise ValueError('First time before start of DST info')
 
@@ -2657,6 +3622,7 @@ def tz_convert_single(int64_t val, object tz1, object tz2):
                       dts.min, dts.sec, dts.us, tz2)
         delta = int(total_seconds(_get_utcoffset(tz2, dt))) * 1000000000
         return utc_date + delta
+
     # Convert UTC to other timezone
     trans, deltas, typ = _get_dst_info(tz2)
 
@@ -3039,7 +4005,9 @@ def get_time_micros(ndarray[int64_t] dtindex):
 
     return micros
 
+
 @cython.wraparound(False)
+@cython.boundscheck(False)
 def get_date_field(ndarray[int64_t] dtindex, object field):
     '''
     Given a int64-based datetime index, extract the year, month, etc.,
@@ -3063,122 +4031,142 @@ def get_date_field(ndarray[int64_t] dtindex, object field):
     out = np.empty(count, dtype='i4')
 
     if field == 'Y':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            out[i] = dts.year
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = dts.year
         return out
 
     elif field == 'M':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            out[i] = dts.month
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = dts.month
         return out
 
     elif field == 'D':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            out[i] = dts.day
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = dts.day
         return out
 
     elif field == 'h':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            out[i] = dts.hour
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = dts.hour
         return out
 
     elif field == 'm':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            out[i] = dts.min
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = dts.min
         return out
 
     elif field == 's':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            out[i] = dts.sec
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = dts.sec
         return out
 
     elif field == 'us':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            out[i] = dts.us
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = dts.us
         return out
 
     elif field == 'ns':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            out[i] = dts.ps / 1000
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = dts.ps / 1000
         return out
     elif field == 'doy':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            isleap = is_leapyear(dts.year)
-            out[i] = _month_offset[isleap, dts.month-1] + dts.day
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                isleap = is_leapyear(dts.year)
+                out[i] = _month_offset[isleap, dts.month-1] + dts.day
         return out
 
     elif field == 'dow':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            ts = convert_to_tsobject(dtindex[i], None, None)
-            out[i] = ts_dayofweek(ts)
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = dayofweek(dts.year, dts.month, dts.day)
         return out
 
     elif field == 'woy':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            ts = convert_to_tsobject(dtindex[i], None, None)
-            isleap = is_leapyear(dts.year)
-            isleap_prev = is_leapyear(dts.year - 1)
-            mo_off = _month_offset[isleap, dts.month - 1]
-            doy = mo_off + dts.day
-            dow = ts_dayofweek(ts)
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                isleap = is_leapyear(dts.year)
+                isleap_prev = is_leapyear(dts.year - 1)
+                mo_off = _month_offset[isleap, dts.month - 1]
+                doy = mo_off + dts.day
+                dow = dayofweek(dts.year, dts.month, dts.day)
 
-            #estimate
-            woy = (doy - 1) - dow + 3
-            if woy >= 0:
-                woy = woy / 7 + 1
+                #estimate
+                woy = (doy - 1) - dow + 3
+                if woy >= 0:
+                    woy = woy / 7 + 1
 
-            # verify
-            if woy < 0:
-                if (woy > -2) or (woy == -2 and isleap_prev):
-                    woy = 53
-                else:
-                    woy = 52
-            elif woy == 53:
-                if 31 - dts.day + dow < 3:
-                    woy = 1
+                # verify
+                if woy < 0:
+                    if (woy > -2) or (woy == -2 and isleap_prev):
+                        woy = 53
+                    else:
+                        woy = 52
+                elif woy == 53:
+                    if 31 - dts.day + dow < 3:
+                        woy = 1
 
-            out[i] = woy
+                out[i] = woy
         return out
 
     elif field == 'q':
-        for i in range(count):
-            if dtindex[i] == NPY_NAT: out[i] = -1; continue
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
 
-            pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
-            out[i] = dts.month
-            out[i] = ((out[i] - 1) / 3) + 1
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = dts.month
+                out[i] = ((out[i] - 1) / 3) + 1
+        return out
+
+    elif field == 'dim':
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = -1; continue
+
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                out[i] = days_in_month(dts)
         return out
 
     raise ValueError("Field %s not supported" % field)
@@ -3410,6 +4398,8 @@ cdef inline int m8_weekday(int64_t val):
 cdef int64_t DAY_NS = 86400000000000LL
 
 
+@cython.wraparound(False)
+@cython.boundscheck(False)
 def date_normalize(ndarray[int64_t] stamps, tz=None):
     cdef:
         Py_ssize_t i, n = len(stamps)
@@ -3422,15 +4412,18 @@ def date_normalize(ndarray[int64_t] stamps, tz=None):
         tz = maybe_get_tz(tz)
         result = _normalize_local(stamps, tz)
     else:
-        for i in range(n):
-            if stamps[i] == NPY_NAT:
-                result[i] = NPY_NAT
-                continue
-            pandas_datetime_to_datetimestruct(stamps[i], PANDAS_FR_ns, &dts)
-            result[i] = _normalized_stamp(&dts)
+        with nogil:
+            for i in range(n):
+                if stamps[i] == NPY_NAT:
+                    result[i] = NPY_NAT
+                    continue
+                pandas_datetime_to_datetimestruct(stamps[i], PANDAS_FR_ns, &dts)
+                result[i] = _normalized_stamp(&dts)
 
     return result
 
+@cython.wraparound(False)
+@cython.boundscheck(False)
 cdef _normalize_local(ndarray[int64_t] stamps, object tz):
     cdef:
         Py_ssize_t n = len(stamps)
@@ -3439,12 +4432,13 @@ cdef _normalize_local(ndarray[int64_t] stamps, object tz):
         pandas_datetimestruct dts
 
     if _is_utc(tz):
-        for i in range(n):
-            if stamps[i] == NPY_NAT:
-                result[i] = NPY_NAT
-                continue
-            pandas_datetime_to_datetimestruct(stamps[i], PANDAS_FR_ns, &dts)
-            result[i] = _normalized_stamp(&dts)
+        with nogil:
+            for i in range(n):
+                if stamps[i] == NPY_NAT:
+                    result[i] = NPY_NAT
+                    continue
+                pandas_datetime_to_datetimestruct(stamps[i], PANDAS_FR_ns, &dts)
+                result[i] = _normalized_stamp(&dts)
     elif _is_tzlocal(tz):
         for i in range(n):
             if stamps[i] == NPY_NAT:
@@ -3487,7 +4481,7 @@ cdef _normalize_local(ndarray[int64_t] stamps, object tz):
 
     return result
 
-cdef inline int64_t _normalized_stamp(pandas_datetimestruct *dts):
+cdef inline int64_t _normalized_stamp(pandas_datetimestruct *dts) nogil:
     dts.hour = 0
     dts.min = 0
     dts.sec = 0
@@ -3552,6 +4546,8 @@ def monthrange(int64_t year, int64_t month):
 cdef inline int64_t ts_dayofweek(_TSObject ts):
     return dayofweek(ts.dts.year, ts.dts.month, ts.dts.day)
 
+cdef inline int days_in_month(pandas_datetimestruct dts) nogil:
+    return days_per_month_table[is_leapyear(dts.year)][dts.month-1]
 
 cpdef normalize_date(object dt):
     '''
@@ -3569,572 +4565,94 @@ cpdef normalize_date(object dt):
     else:
         raise TypeError('Unrecognized type: %s' % type(dt))
 
-cdef ndarray[int64_t] localize_dt64arr_to_period(ndarray[int64_t] stamps,
-                                                 int freq, object tz):
-    cdef:
-        Py_ssize_t n = len(stamps)
-        ndarray[int64_t] result = np.empty(n, dtype=np.int64)
-        ndarray[int64_t] trans, deltas, pos
-        pandas_datetimestruct dts
 
-    if not have_pytz:
-        raise Exception('Could not find pytz module')
+cdef inline int _year_add_months(pandas_datetimestruct dts,
+                                 int months) nogil:
+    '''new year number after shifting pandas_datetimestruct number of months'''
+    return dts.year + (dts.month + months - 1) / 12
 
-    if _is_utc(tz):
-        for i in range(n):
-            if stamps[i] == NPY_NAT:
-                result[i] = NPY_NAT
-                continue
-            pandas_datetime_to_datetimestruct(stamps[i], PANDAS_FR_ns, &dts)
-            result[i] = get_period_ordinal(dts.year, dts.month, dts.day,
-                                           dts.hour, dts.min, dts.sec, dts.us, dts.ps, freq)
+cdef inline int _month_add_months(pandas_datetimestruct dts,
+                                  int months) nogil:
+    '''new month number after shifting pandas_datetimestruct number of months'''
+    cdef int new_month = (dts.month + months) % 12
+    return 12 if new_month == 0 else new_month
 
-    elif _is_tzlocal(tz):
-        for i in range(n):
-            if stamps[i] == NPY_NAT:
-                result[i] = NPY_NAT
-                continue
-            pandas_datetime_to_datetimestruct(stamps[i], PANDAS_FR_ns,
-                                              &dts)
-            dt = datetime(dts.year, dts.month, dts.day, dts.hour,
-                          dts.min, dts.sec, dts.us, tz)
-            delta = int(total_seconds(_get_utcoffset(tz, dt))) * 1000000000
-            pandas_datetime_to_datetimestruct(stamps[i] + delta,
-                                              PANDAS_FR_ns, &dts)
-            result[i] = get_period_ordinal(dts.year, dts.month, dts.day,
-                                           dts.hour, dts.min, dts.sec, dts.us, dts.ps, freq)
-    else:
-        # Adjust datetime64 timestamp, recompute datetimestruct
-        trans, deltas, typ = _get_dst_info(tz)
+@cython.wraparound(False)
+@cython.boundscheck(False)
+def shift_months(int64_t[:] dtindex, int months, object day=None):
+    '''
+    Given an int64-based datetime index, shift all elements
+    specified number of months using DateOffset semantics
 
-        _pos = trans.searchsorted(stamps, side='right') - 1
-        if _pos.dtype != np.int64:
-            _pos = _pos.astype(np.int64)
-        pos = _pos
-
-        # statictzinfo
-        if typ not in ['pytz','dateutil']:
-            for i in range(n):
-                if stamps[i] == NPY_NAT:
-                    result[i] = NPY_NAT
-                    continue
-                pandas_datetime_to_datetimestruct(stamps[i] + deltas[0],
-                                                  PANDAS_FR_ns, &dts)
-                result[i] = get_period_ordinal(dts.year, dts.month, dts.day,
-                                               dts.hour, dts.min, dts.sec, dts.us, dts.ps, freq)
-        else:
-            for i in range(n):
-                if stamps[i] == NPY_NAT:
-                    result[i] = NPY_NAT
-                    continue
-                pandas_datetime_to_datetimestruct(stamps[i] + deltas[pos[i]],
-                                                  PANDAS_FR_ns, &dts)
-                result[i] = get_period_ordinal(dts.year, dts.month, dts.day,
-                                               dts.hour, dts.min, dts.sec, dts.us, dts.ps, freq)
-
-    return result
-
-
-cdef extern from "period.h":
-    ctypedef struct date_info:
-        int64_t absdate
-        double abstime
-        double second
-        int minute
-        int hour
-        int day
-        int month
-        int quarter
-        int year
-        int day_of_week
-        int day_of_year
-        int calendar
-
-    ctypedef struct asfreq_info:
-        int from_week_end
-        int to_week_end
-
-        int from_a_year_end
-        int to_a_year_end
-
-        int from_q_year_end
-        int to_q_year_end
-
-    ctypedef int64_t (*freq_conv_func)(int64_t, char, asfreq_info*)
-
-    void initialize_daytime_conversion_factor_matrix()
-    int64_t asfreq(int64_t dtordinal, int freq1, int freq2, char relation) except INT32_MIN
-    freq_conv_func get_asfreq_func(int fromFreq, int toFreq)
-    void get_asfreq_info(int fromFreq, int toFreq, asfreq_info *af_info)
-
-    int64_t get_period_ordinal(int year, int month, int day,
-                          int hour, int minute, int second, int microseconds, int picoseconds,
-                          int freq) except INT32_MIN
-
-    int64_t get_python_ordinal(int64_t period_ordinal, int freq) except INT32_MIN
-
-    int get_date_info(int64_t ordinal, int freq, date_info *dinfo) except INT32_MIN
-    double getAbsTime(int, int64_t, int64_t)
-
-    int pyear(int64_t ordinal, int freq) except INT32_MIN
-    int pqyear(int64_t ordinal, int freq) except INT32_MIN
-    int pquarter(int64_t ordinal, int freq) except INT32_MIN
-    int pmonth(int64_t ordinal, int freq) except INT32_MIN
-    int pday(int64_t ordinal, int freq) except INT32_MIN
-    int pweekday(int64_t ordinal, int freq) except INT32_MIN
-    int pday_of_week(int64_t ordinal, int freq) except INT32_MIN
-    int pday_of_year(int64_t ordinal, int freq) except INT32_MIN
-    int pweek(int64_t ordinal, int freq) except INT32_MIN
-    int phour(int64_t ordinal, int freq) except INT32_MIN
-    int pminute(int64_t ordinal, int freq) except INT32_MIN
-    int psecond(int64_t ordinal, int freq) except INT32_MIN
-    char *c_strftime(date_info *dinfo, char *fmt)
-    int get_yq(int64_t ordinal, int freq, int *quarter, int *year)
-
-initialize_daytime_conversion_factor_matrix()
-
-# Period logic
-#----------------------------------------------------------------------
-
-cdef inline int64_t apply_mult(int64_t period_ord, int64_t mult):
-    """
-    Get freq+multiple ordinal value from corresponding freq-only ordinal value.
-    For example, 5min ordinal will be 1/5th the 1min ordinal (rounding down to
-    integer).
-    """
-    if mult == 1:
-        return period_ord
-
-    return (period_ord - 1) // mult
-
-cdef inline int64_t remove_mult(int64_t period_ord_w_mult, int64_t mult):
-    """
-    Get freq-only ordinal value from corresponding freq+multiple ordinal.
-    """
-    if mult == 1:
-        return period_ord_w_mult
-
-    return period_ord_w_mult * mult + 1;
-
-def dt64arr_to_periodarr(ndarray[int64_t] dtarr, int freq, tz=None):
-    """
-    Convert array of datetime64 values (passed in as 'i8' dtype) to a set of
-    periods corresponding to desired frequency, per period convention.
-    """
-    cdef:
-        ndarray[int64_t] out
-        Py_ssize_t i, l
-        pandas_datetimestruct dts
-
-    l = len(dtarr)
-
-    out = np.empty(l, dtype='i8')
-
-    if tz is None:
-        for i in range(l):
-            if dtarr[i] == iNaT:
-                out[i] = iNaT
-                continue
-            pandas_datetime_to_datetimestruct(dtarr[i], PANDAS_FR_ns, &dts)
-            out[i] = get_period_ordinal(dts.year, dts.month, dts.day,
-                                        dts.hour, dts.min, dts.sec, dts.us, dts.ps, freq)
-    else:
-        out = localize_dt64arr_to_period(dtarr, freq, tz)
-    return out
-
-def periodarr_to_dt64arr(ndarray[int64_t] periodarr, int freq):
-    """
-    Convert array to datetime64 values from a set of ordinals corresponding to
-    periods per period convention.
-    """
-    cdef:
-        ndarray[int64_t] out
-        Py_ssize_t i, l
-
-    l = len(periodarr)
-
-    out = np.empty(l, dtype='i8')
-
-    for i in range(l):
-        if periodarr[i] == iNaT:
-            out[i] = iNaT
-            continue
-        out[i] = period_ordinal_to_dt64(periodarr[i], freq)
-
-    return out
-
-cdef char START = 'S'
-cdef char END = 'E'
-
-cpdef int64_t period_asfreq(int64_t period_ordinal, int freq1, int freq2,
-                            bint end):
-    """
-    Convert period ordinal from one frequency to another, and if upsampling,
-    choose to use start ('S') or end ('E') of period.
-    """
-    cdef:
-        int64_t retval
-
-    if period_ordinal == iNaT:
-        return iNaT
-
-    if end:
-        retval = asfreq(period_ordinal, freq1, freq2, END)
-    else:
-        retval = asfreq(period_ordinal, freq1, freq2, START)
-
-    if retval == INT32_MIN:
-        raise ValueError('Frequency conversion failed')
-
-    return retval
-
-def period_asfreq_arr(ndarray[int64_t] arr, int freq1, int freq2, bint end):
-    """
-    Convert int64-array of period ordinals from one frequency to another, and
-    if upsampling, choose to use start ('S') or end ('E') of period.
-    """
-    cdef:
-        ndarray[int64_t] result
-        Py_ssize_t i, n
-        freq_conv_func func
-        asfreq_info finfo
-        int64_t val, ordinal
-        char relation
-
-    n = len(arr)
-    result = np.empty(n, dtype=np.int64)
-
-    func = get_asfreq_func(freq1, freq2)
-    get_asfreq_info(freq1, freq2, &finfo)
-
-    if end:
-        relation = END
-    else:
-        relation = START
-
-    mask = arr == iNaT
-    if mask.any():      # NaT process
-        for i in range(n):
-            val = arr[i]
-            if val != iNaT:
-                val = func(val, relation, &finfo)
-                if val == INT32_MIN:
-                    raise ValueError("Unable to convert to desired frequency.")
-            result[i] = val
-    else:
-        for i in range(n):
-            val = func(arr[i], relation, &finfo)
-            if val == INT32_MIN:
-                raise ValueError("Unable to convert to desired frequency.")
-            result[i] = val
-
-    return result
-
-def period_ordinal(int y, int m, int d, int h, int min, int s, int us, int ps, int freq):
-    cdef:
-        int64_t ordinal
-
-    return get_period_ordinal(y, m, d, h, min, s, us, ps, freq)
-
-
-cpdef int64_t period_ordinal_to_dt64(int64_t ordinal, int freq):
-    cdef:
-        pandas_datetimestruct dts
-        date_info dinfo
-        float subsecond_fraction
-
-    if ordinal == iNaT:
-        return NPY_NAT
-
-    get_date_info(ordinal, freq, &dinfo)
-
-    dts.year = dinfo.year
-    dts.month = dinfo.month
-    dts.day = dinfo.day
-    dts.hour = dinfo.hour
-    dts.min = dinfo.minute
-    dts.sec = int(dinfo.second)
-    subsecond_fraction = dinfo.second - dts.sec
-    dts.us = int((subsecond_fraction) * 1e6)
-    dts.ps = int(((subsecond_fraction) * 1e6 - dts.us) * 1e6)
-
-    return pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &dts)
-
-def period_format(int64_t value, int freq, object fmt=None):
-    cdef:
-        int freq_group
-
-    if value == iNaT:
-        return repr(NaT)
-
-    if fmt is None:
-        freq_group = (freq // 1000) * 1000
-        if freq_group == 1000: # FR_ANN
-            fmt = b'%Y'
-        elif freq_group == 2000: # FR_QTR
-            fmt = b'%FQ%q'
-        elif freq_group == 3000: # FR_MTH
-            fmt = b'%Y-%m'
-        elif freq_group == 4000: # WK
-            left = period_asfreq(value, freq, 6000, 0)
-            right = period_asfreq(value, freq, 6000, 1)
-            return '%s/%s' % (period_format(left, 6000),
-                              period_format(right, 6000))
-        elif (freq_group == 5000 # BUS
-              or freq_group == 6000): # DAY
-            fmt = b'%Y-%m-%d'
-        elif freq_group == 7000: # HR
-            fmt = b'%Y-%m-%d %H:00'
-        elif freq_group == 8000: # MIN
-            fmt = b'%Y-%m-%d %H:%M'
-        elif freq_group == 9000: # SEC
-            fmt = b'%Y-%m-%d %H:%M:%S'
-        elif freq_group == 10000: # MILLISEC
-            fmt = b'%Y-%m-%d %H:%M:%S.%l'
-        elif freq_group == 11000: # MICROSEC
-            fmt = b'%Y-%m-%d %H:%M:%S.%u'
-        elif freq_group == 12000: # NANOSEC
-            fmt = b'%Y-%m-%d %H:%M:%S.%n'
-        else:
-            raise ValueError('Unknown freq: %d' % freq)
-
-    return _period_strftime(value, freq, fmt)
-
-
-cdef list extra_fmts = [(b"%q", b"^`AB`^"),
-                        (b"%f", b"^`CD`^"),
-                        (b"%F", b"^`EF`^"),
-                        (b"%l", b"^`GH`^"),
-                        (b"%u", b"^`IJ`^"),
-                        (b"%n", b"^`KL`^")]
-
-cdef list str_extra_fmts = ["^`AB`^", "^`CD`^", "^`EF`^", "^`GH`^", "^`IJ`^", "^`KL`^"]
-
-cdef object _period_strftime(int64_t value, int freq, object fmt):
-    import sys
-
+    day: {None, 'start', 'end'}
+       * None: day of month
+       * 'start' 1st day of month
+       * 'end' last day of month
+    '''
     cdef:
         Py_ssize_t i
-        date_info dinfo
-        char *formatted
-        object pat, repl, result
-        list found_pat = [False] * len(extra_fmts)
-        int year, quarter
-
-    if PyUnicode_Check(fmt):
-        fmt = fmt.encode('utf-8')
-
-    get_date_info(value, freq, &dinfo)
-    for i in range(len(extra_fmts)):
-        pat = extra_fmts[i][0]
-        repl = extra_fmts[i][1]
-        if pat in fmt:
-            fmt = fmt.replace(pat, repl)
-            found_pat[i] = True
-
-    formatted = c_strftime(&dinfo, <char*> fmt)
-
-    result = util.char_to_string(formatted)
-    free(formatted)
-
-    for i in range(len(extra_fmts)):
-        if found_pat[i]:
-            if get_yq(value, freq, &quarter, &year) < 0:
-                raise ValueError('Unable to get quarter and year')
-
-            if i == 0:
-                repl = '%d' % quarter
-            elif i == 1:  # %f, 2-digit year
-                repl = '%.2d' % (year % 100)
-            elif i == 2:
-                repl = '%d' % year
-            elif i == 3:
-                repl = '%03d' % (value % 1000)
-            elif i == 4:
-                repl = '%06d' % (value % 1000000)
-            elif i == 5:
-                repl = '%09d' % (value % 1000000000)
-
-            result = result.replace(str_extra_fmts[i], repl)
-
-    if PY2:
-        result = result.decode('utf-8', 'ignore')
-
-    return result
-
-# period accessors
-
-ctypedef int (*accessor)(int64_t ordinal, int freq) except INT32_MIN
-
-def get_period_field(int code, int64_t value, int freq):
-    cdef accessor f = _get_accessor_func(code)
-    if f is NULL:
-        raise ValueError('Unrecognized period code: %d' % code)
-    if value == iNaT:
-        return np.nan
-    return f(value, freq)
-
-def get_period_field_arr(int code, ndarray[int64_t] arr, int freq):
-    cdef:
-        Py_ssize_t i, sz
-        ndarray[int64_t] out
-        accessor f
-
-    f = _get_accessor_func(code)
-    if f is NULL:
-        raise ValueError('Unrecognized period code: %d' % code)
-
-    sz = len(arr)
-    out = np.empty(sz, dtype=np.int64)
-
-    for i in range(sz):
-        if arr[i] == iNaT:
-            out[i] = -1
-            continue
-        out[i] = f(arr[i], freq)
-
-    return out
-
-
-
-cdef accessor _get_accessor_func(int code):
-    if code == 0:
-        return &pyear
-    elif code == 1:
-        return &pqyear
-    elif code == 2:
-        return &pquarter
-    elif code == 3:
-        return &pmonth
-    elif code == 4:
-        return &pday
-    elif code == 5:
-        return &phour
-    elif code == 6:
-        return &pminute
-    elif code == 7:
-        return &psecond
-    elif code == 8:
-        return &pweek
-    elif code == 9:
-        return &pday_of_year
-    elif code == 10:
-        return &pweekday
-    return NULL
-
-
-def extract_ordinals(ndarray[object] values, freq):
-    cdef:
-        Py_ssize_t i, n = len(values)
-        ndarray[int64_t] ordinals = np.empty(n, dtype=np.int64)
-        object p
-
-    for i in range(n):
-        p = values[i]
-        ordinals[i] = p.ordinal
-        if p.freq != freq:
-            raise ValueError("%s is wrong freq" % p)
-
-    return ordinals
-
-cpdef resolution(ndarray[int64_t] stamps, tz=None):
-    cdef:
-        Py_ssize_t i, n = len(stamps)
         pandas_datetimestruct dts
-        int reso = D_RESO, curr_reso
+        int count = len(dtindex)
+        int months_to_roll
+        bint roll_check
+        int64_t[:] out = np.empty(count, dtype='int64')
 
-    if tz is not None:
-        tz = maybe_get_tz(tz)
-        return _reso_local(stamps, tz)
+    if day is None:
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = NPY_NAT; continue
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                dts.year = _year_add_months(dts, months)
+                dts.month = _month_add_months(dts, months)
+
+                dts.day = min(dts.day, days_in_month(dts))
+                out[i] = pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &dts)
+    elif day == 'start':
+        roll_check = False
+        if months <= 0:
+            months += 1
+            roll_check = True
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = NPY_NAT; continue
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                months_to_roll = months
+
+                # offset semantics - if on the anchor point and going backwards
+                # shift to next
+                if roll_check and dts.day == 1:
+                    months_to_roll -= 1
+
+                dts.year = _year_add_months(dts, months_to_roll)
+                dts.month = _month_add_months(dts, months_to_roll)
+                dts.day = 1
+
+                out[i] = pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &dts)
+    elif day == 'end':
+        roll_check = False
+        if months > 0:
+            months -= 1
+            roll_check = True
+        with nogil:
+            for i in range(count):
+                if dtindex[i] == NPY_NAT: out[i] = NPY_NAT; continue
+                pandas_datetime_to_datetimestruct(dtindex[i], PANDAS_FR_ns, &dts)
+                months_to_roll = months
+
+                # similar semantics - when adding shift forward by one
+                # month if already at an end of month
+                if roll_check and dts.day == days_in_month(dts):
+                    months_to_roll += 1
+
+                dts.year = _year_add_months(dts, months_to_roll)
+                dts.month = _month_add_months(dts, months_to_roll)
+
+                dts.day = days_in_month(dts)
+                out[i] = pandas_datetimestruct_to_datetime(PANDAS_FR_ns, &dts)
     else:
-        for i in range(n):
-            if stamps[i] == NPY_NAT:
-                continue
-            pandas_datetime_to_datetimestruct(stamps[i], PANDAS_FR_ns, &dts)
-            curr_reso = _reso_stamp(&dts)
-            if curr_reso < reso:
-                reso = curr_reso
-        return reso
+        raise ValueError("day must be None, 'start' or 'end'")
 
-US_RESO = 0
-MS_RESO = 1
-S_RESO = 2
-T_RESO = 3
-H_RESO = 4
-D_RESO = 5
-
-cdef inline int _reso_stamp(pandas_datetimestruct *dts):
-    if dts.us != 0:
-        if dts.us % 1000 == 0:
-            return MS_RESO
-        return US_RESO
-    elif dts.sec != 0:
-        return S_RESO
-    elif dts.min != 0:
-        return T_RESO
-    elif dts.hour != 0:
-        return H_RESO
-    return D_RESO
-
-cdef _reso_local(ndarray[int64_t] stamps, object tz):
-    cdef:
-        Py_ssize_t n = len(stamps)
-        int reso = D_RESO, curr_reso
-        ndarray[int64_t] trans, deltas, pos
-        pandas_datetimestruct dts
-
-    if _is_utc(tz):
-        for i in range(n):
-            if stamps[i] == NPY_NAT:
-                continue
-            pandas_datetime_to_datetimestruct(stamps[i], PANDAS_FR_ns, &dts)
-            curr_reso = _reso_stamp(&dts)
-            if curr_reso < reso:
-                reso = curr_reso
-    elif _is_tzlocal(tz):
-        for i in range(n):
-            if stamps[i] == NPY_NAT:
-                continue
-            pandas_datetime_to_datetimestruct(stamps[i], PANDAS_FR_ns,
-                                              &dts)
-            dt = datetime(dts.year, dts.month, dts.day, dts.hour,
-                          dts.min, dts.sec, dts.us, tz)
-            delta = int(total_seconds(_get_utcoffset(tz, dt))) * 1000000000
-            pandas_datetime_to_datetimestruct(stamps[i] + delta,
-                                              PANDAS_FR_ns, &dts)
-            curr_reso = _reso_stamp(&dts)
-            if curr_reso < reso:
-                reso = curr_reso
-    else:
-        # Adjust datetime64 timestamp, recompute datetimestruct
-        trans, deltas, typ = _get_dst_info(tz)
-
-        _pos = trans.searchsorted(stamps, side='right') - 1
-        if _pos.dtype != np.int64:
-            _pos = _pos.astype(np.int64)
-        pos = _pos
-
-        # statictzinfo
-        if typ not in ['pytz','dateutil']:
-            for i in range(n):
-                if stamps[i] == NPY_NAT:
-                    continue
-                pandas_datetime_to_datetimestruct(stamps[i] + deltas[0],
-                                                  PANDAS_FR_ns, &dts)
-                curr_reso = _reso_stamp(&dts)
-                if curr_reso < reso:
-                    reso = curr_reso
-        else:
-            for i in range(n):
-                if stamps[i] == NPY_NAT:
-                    continue
-                pandas_datetime_to_datetimestruct(stamps[i] + deltas[pos[i]],
-                                                  PANDAS_FR_ns, &dts)
-                curr_reso = _reso_stamp(&dts)
-                if curr_reso < reso:
-                    reso = curr_reso
-
-    return reso
+    return np.asarray(out)
 
 #----------------------------------------------------------------------
 # Don't even ask
@@ -4399,8 +4917,8 @@ class TimeRE(dict):
         # format directives (%m, etc.).
         regex_chars = re_compile(r"([\\.^$*+?\(\){}\[\]|])")
         format = regex_chars.sub(r"\\\1", format)
-        whitespace_replacement = re_compile('\s+')
-        format = whitespace_replacement.sub('\s+', format)
+        whitespace_replacement = re_compile(r'\s+')
+        format = whitespace_replacement.sub(r'\\s+', format)
         while '%' in format:
             directive_index = format.index('%')+1
             processed_format = "%s%s%s" % (processed_format,

@@ -1,3 +1,5 @@
+# cython: profile=False
+
 from numpy cimport ndarray
 
 from numpy cimport (float64_t, int32_t, int64_t, uint8_t,
@@ -89,6 +91,7 @@ cdef class IndexEngine:
         self.monotonic_check = 0
 
         self.unique = 0
+        self.unique_check = 0
         self.monotonic_inc = 0
         self.monotonic_dec = 0
 
@@ -97,7 +100,7 @@ cdef class IndexEngine:
         hash(val)
         return val in self.mapping
 
-    cpdef get_value(self, ndarray arr, object key):
+    cpdef get_value(self, ndarray arr, object key, object tz=None):
         '''
         arr : 1-dimensional ndarray
         '''
@@ -110,7 +113,7 @@ cdef class IndexEngine:
             return arr[loc]
         else:
             if arr.descr.type_num == NPY_DATETIME:
-                return Timestamp(util.get_value_at(arr, loc))
+                return Timestamp(util.get_value_at(arr, loc), tz=tz)
             elif arr.descr.type_num == NPY_TIMEDELTA:
                 return Timedelta(util.get_value_at(arr, loc))
             return util.get_value_at(arr, loc)
@@ -133,7 +136,7 @@ cdef class IndexEngine:
 
     cpdef get_loc(self, object val):
         if is_definitely_invalid_key(val):
-            raise TypeError
+            raise TypeError("'{val}' is an invalid key".format(val=val))
 
         if self.over_size_threshold and self.is_monotonic_increasing:
             if not self.is_unique:
@@ -230,16 +233,12 @@ cdef class IndexEngine:
     cdef inline _do_monotonic_check(self):
         try:
             values = self._get_index_values()
-            self.monotonic_inc, self.monotonic_dec, unique = \
+            self.monotonic_inc, self.monotonic_dec = \
                 self._call_monotonic(values)
-
-            if unique is not None:
-                self.unique = unique
-                self.unique_check = 1
-
         except TypeError:
             self.monotonic_inc = 0
             self.monotonic_dec = 0
+
         self.monotonic_check = 1
 
     cdef _get_index_values(self):

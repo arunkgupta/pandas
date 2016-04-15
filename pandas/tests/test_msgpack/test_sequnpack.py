@@ -2,11 +2,11 @@
 # coding: utf-8
 
 import unittest
-import nose
 
 from pandas import compat
 from pandas.msgpack import Unpacker, BufferFull
 from pandas.msgpack import OutOfData
+
 
 class TestPack(unittest.TestCase):
 
@@ -82,3 +82,15 @@ class TestPack(unittest.TestCase):
         assert unpacker.read_bytes(3) == b'oob'
         assert unpacker.unpack() == ord(b'a')
         assert unpacker.unpack() == ord(b'r')
+
+    def test_issue124(self):
+        unpacker = Unpacker()
+        unpacker.feed(b'\xa1?\xa1!')
+        assert tuple(unpacker) == (b'?', b'!')
+        assert tuple(unpacker) == ()
+        unpacker.feed(b"\xa1?\xa1")
+        assert tuple(unpacker) == (b'?', )
+        assert tuple(unpacker) == ()
+        unpacker.feed(b"!")
+        assert tuple(unpacker) == (b'!', )
+        assert tuple(unpacker) == ()

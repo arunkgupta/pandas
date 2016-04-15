@@ -161,6 +161,8 @@ enum PANDAS_FORMAT
 //#define PRINTMARK() fprintf(stderr, "%s: MARK(%d)\n", __FILE__, __LINE__)
 #define PRINTMARK()
 
+int PdBlock_iterNext(JSOBJ, JSONTypeContext *);
+
 // import_array() compat
 #if (PY_VERSION_HEX >= 0x03000000)
 void *initObjToJSON(void)
@@ -457,7 +459,7 @@ static void *PyTimeToJSON(JSOBJ _obj, JSONTypeContext *tc, void *outValue, size_
     PyErr_SetString(PyExc_ValueError, "Failed to convert time");
     return NULL;
   }
-  if (PyUnicode_Check(str)) 
+  if (PyUnicode_Check(str))
   {
     tmp = str;
     str = PyUnicode_AsUTF8String(str);
@@ -479,7 +481,7 @@ static int NpyTypeToJSONType(PyObject* obj, JSONTypeContext* tc, int npyType, vo
   {
     PRINTMARK();
     castfunc = PyArray_GetCastFunc(PyArray_DescrFromType(npyType), NPY_DOUBLE);
-    if (!castfunc) 
+    if (!castfunc)
     {
       PyErr_Format (
           PyExc_ValueError,
@@ -501,7 +503,7 @@ static int NpyTypeToJSONType(PyObject* obj, JSONTypeContext* tc, int npyType, vo
   {
     PRINTMARK();
     castfunc = PyArray_GetCastFunc(PyArray_DescrFromType(npyType), NPY_INT64);
-    if (!castfunc) 
+    if (!castfunc)
     {
       PyErr_Format (
           PyExc_ValueError,
@@ -584,7 +586,12 @@ void NpyArr_iterBegin(JSOBJ _obj, JSONTypeContext *tc)
     obj = (PyArrayObject *) _obj;
   }
 
-  if (PyArray_SIZE(obj) > 0)
+  if (PyArray_SIZE(obj) < 0)
+  {
+    PRINTMARK();
+    GET_TC(tc)->iterNext = NpyArr_iterNextNone;
+  }
+  else
   {
     PRINTMARK();
     npyarr = PyObject_Malloc(sizeof(NpyArrContext));
@@ -623,11 +630,6 @@ void NpyArr_iterBegin(JSOBJ _obj, JSONTypeContext *tc)
 
     npyarr->columnLabels = GET_TC(tc)->columnLabels;
     npyarr->rowLabels = GET_TC(tc)->rowLabels;
-  }
-  else
-  {
-    PRINTMARK();
-    GET_TC(tc)->iterNext = NpyArr_iterNextNone;
   }
 }
 
@@ -835,7 +837,10 @@ char *PdBlock_iterGetName(JSOBJ obj, JSONTypeContext *tc, size_t *outLen)
   }
   else
   {
-    idx = npyarr->index[npyarr->stridedim - npyarr->inc] - 1;
+    idx = GET_TC(tc)->iterNext != PdBlock_iterNext
+        ? npyarr->index[npyarr->stridedim - npyarr->inc] - 1
+        : npyarr->index[npyarr->stridedim];
+
     NpyArr_getLabel(obj, tc, outLen, idx, npyarr->rowLabels);
   }
   return NULL;
@@ -1054,8 +1059,11 @@ void PdBlock_iterBegin(JSOBJ _obj, JSONTypeContext *tc)
         npyarr = GET_TC(tc)->npyarr;
 
         // set the dataptr to our desired column and initialise
-        npyarr->dataptr += npyarr->stride * idx;
-        NpyArr_iterNext(obj, tc);
+        if (npyarr != NULL)
+        {
+            npyarr->dataptr += npyarr->stride * idx;
+            NpyArr_iterNext(obj, tc);
+        }
         GET_TC(tc)->itemValue = NULL;
         ((PyObjectEncoder*) tc->encoder)->npyCtxtPassthru = NULL;
 
@@ -1806,7 +1814,7 @@ char** NpyArr_encodeLabels(PyArrayObject* labels, JSONObjectEncoder* enc, npy_in
 
 void Object_beginTypeContext (JSOBJ _obj, JSONTypeContext *tc)
 {
-  PyObject *obj, *exc, *toDictFunc, *tmpObj;
+  PyObject *obj, *exc, *toDictFunc, *tmpObj, *getValuesFunc;
   TypeContext *pc;
   PyObjectEncoder *enc;
   double val;
@@ -1855,7 +1863,7 @@ void Object_beginTypeContext (JSOBJ _obj, JSONTypeContext *tc)
   }
   tc->prv = pc;
 
-  if (PyIter_Check(obj) || PyArray_Check(obj))
+  if (PyIter_Check(obj) || (PyArray_Check(obj) && !PyArray_CheckScalar(obj) ))
   {
     PRINTMARK();
     goto ISITERABLE;
@@ -2057,6 +2065,23 @@ void Object_beginTypeContext (JSOBJ _obj, JSONTypeContext *tc)
     pc->PyTypeToJSON = NpyFloatToDOUBLE; tc->type = JT_DOUBLE;
     return;
   }
+  else
+  if (PyArray_Check(obj) && PyArray_CheckScalar(obj)) {
+    #if PY_MAJOR_VERSION >= 3
+      PyErr_Format(
+        PyExc_TypeError,
+        "%R (0d array) is not JSON serializable at the moment",
+        obj
+      );
+    #else
+      PyErr_Format(
+        PyExc_TypeError,
+        "%s (0d array) is not JSON serializable at the moment",
+        PyString_AsString(PyObject_Repr(obj))
+      );
+    #endif
+    return;
+  }
 
 ISITERABLE:
 
@@ -2074,14 +2099,25 @@ ISITERABLE:
       return;
     }
 
-    PRINTMARK();
-    tc->type = JT_ARRAY;
-    pc->newObj = PyObject_GetAttrString(obj, "values");
-    pc->iterBegin = NpyArr_iterBegin;
-    pc->iterEnd = NpyArr_iterEnd;
-    pc->iterNext = NpyArr_iterNext;
-    pc->iterGetValue = NpyArr_iterGetValue;
-    pc->iterGetName = NpyArr_iterGetName;
+    getValuesFunc = PyObject_GetAttrString(obj, "get_values");
+    if (getValuesFunc)
+    {
+      PRINTMARK();
+      tc->type = JT_ARRAY;
+      pc->newObj = PyObject_CallObject(getValuesFunc, NULL);
+      pc->iterBegin = NpyArr_iterBegin;
+      pc->iterEnd = NpyArr_iterEnd;
+      pc->iterNext = NpyArr_iterNext;
+      pc->iterGetValue = NpyArr_iterGetValue;
+      pc->iterGetName = NpyArr_iterGetName;
+
+      Py_DECREF(getValuesFunc);
+    }
+    else
+    {
+      goto INVALID;
+    }
+
     return;
   }
   else
@@ -2371,7 +2407,7 @@ ISITERABLE:
       }
       goto INVALID;
     }
-    encode (tmpObj, enc, NULL, 0);
+    encode (tmpObj, (JSONObjectEncoder*) enc, NULL, 0);
     Py_DECREF(tmpObj);
     goto INVALID;
   }
@@ -2624,7 +2660,7 @@ PyObject* objToJSON(PyObject* self, PyObject *args, PyObject *kwargs)
 
   if (odefHandler != NULL && odefHandler != Py_None)
   {
-    if (!PyCallable_Check(odefHandler)) 
+    if (!PyCallable_Check(odefHandler))
     {
       PyErr_SetString (PyExc_TypeError, "Default handler is not callable");
       return NULL;

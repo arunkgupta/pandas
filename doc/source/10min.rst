@@ -6,14 +6,13 @@
    :suppress:
 
    import numpy as np
-   import random
+   import pandas as pd
    import os
    np.random.seed(123456)
-   from pandas import options
-   import pandas as pd
    np.set_printoptions(precision=4, suppress=True)
-   options.display.mpl_style='default'
-   options.display.max_rows=15
+   import matplotlib
+   matplotlib.style.use('ggplot')
+   pd.options.display.max_rows = 15
 
    #### portions of this were borrowed from the
    #### Pandas cheatsheet
@@ -28,7 +27,7 @@
 This is a short introduction to pandas, geared mainly for new users.
 You can see more complex recipes in the :ref:`Cookbook<cookbook>`
 
-Customarily, we import as follows
+Customarily, we import as follows:
 
 .. ipython:: python
 
@@ -41,21 +40,22 @@ Object Creation
 
 See the :ref:`Data Structure Intro section <dsintro>`
 
-Creating a ``Series`` by passing a list of values, letting pandas create a default
-integer index
+Creating a :class:`Series` by passing a list of values, letting pandas create
+a default integer index:
 
 .. ipython:: python
 
    s = pd.Series([1,3,5,np.nan,6,8])
    s
 
-Creating a ``DataFrame`` by passing a numpy array, with a datetime index and labeled columns.
+Creating a :class:`DataFrame` by passing a numpy array, with a datetime index
+and labeled columns:
 
 .. ipython:: python
 
-   dates = pd.date_range('20130101',periods=6)
+   dates = pd.date_range('20130101', periods=6)
    dates
-   df = pd.DataFrame(np.random.randn(6,4),index=dates,columns=list('ABCD'))
+   df = pd.DataFrame(np.random.randn(6,4), index=dates, columns=list('ABCD'))
    df
 
 Creating a ``DataFrame`` by passing a dict of objects that can be converted to series-like.
@@ -124,7 +124,7 @@ See the top & bottom rows of the frame
    df.head()
    df.tail(3)
 
-Display the index,columns, and the underlying numpy data
+Display the index, columns, and the underlying numpy data
 
 .. ipython:: python
 
@@ -154,7 +154,7 @@ Sorting by values
 
 .. ipython:: python
 
-   df.sort(columns='B')
+   df.sort_values(by='B')
 
 Selection
 ---------
@@ -166,7 +166,7 @@ Selection
    recommend the optimized pandas data access methods, ``.at``, ``.iat``,
    ``.loc``, ``.iloc`` and ``.ix``.
 
-See the indexing documentation :ref:`Indexing and Selecing Data <indexing>` and :ref:`MultiIndex / Advanced Indexing <advanced>`
+See the indexing documentation :ref:`Indexing and Selecting Data <indexing>` and :ref:`MultiIndex / Advanced Indexing <advanced>`
 
 Getting
 ~~~~~~~
@@ -293,7 +293,7 @@ Using the :func:`~Series.isin` method for filtering:
 .. ipython:: python
 
    df2 = df.copy()
-   df2['E']=['one', 'one','two','three','four','three']
+   df2['E'] = ['one', 'one','two','three','four','three']
    df2
    df2[df2['E'].isin(['two','four'])]
 
@@ -305,7 +305,7 @@ by the indexes
 
 .. ipython:: python
 
-   s1 = pd.Series([1,2,3,4,5,6],index=pd.date_range('20130102',periods=6))
+   s1 = pd.Series([1,2,3,4,5,6], index=pd.date_range('20130102', periods=6))
    s1
    df['F'] = s1
 
@@ -354,7 +354,7 @@ returns a copy of the data.
 
 .. ipython:: python
 
-   df1 = df.reindex(index=dates[0:4],columns=list(df.columns) + ['E'])
+   df1 = df.reindex(index=dates[0:4], columns=list(df.columns) + ['E'])
    df1.loc[dates[0]:dates[1],'E'] = 1
    df1
 
@@ -404,9 +404,9 @@ In addition, pandas automatically broadcasts along the specified dimension.
 
 .. ipython:: python
 
-   s = pd.Series([1,3,5,np.nan,6,8],index=dates).shift(2)
+   s = pd.Series([1,3,5,np.nan,6,8], index=dates).shift(2)
    s
-   df.sub(s,axis='index')
+   df.sub(s, axis='index')
 
 
 Apply
@@ -426,7 +426,7 @@ See more at :ref:`Histogramming and Discretization <basics.discretization>`
 
 .. ipython:: python
 
-   s = pd.Series(np.random.randint(0,7,size=10))
+   s = pd.Series(np.random.randint(0, 7, size=10))
    s
    s.value_counts()
 
@@ -458,7 +458,7 @@ operations.
 
 See the :ref:`Merging section <merging>`
 
-Concatenating pandas objects together
+Concatenating pandas objects together with :func:`concat`:
 
 .. ipython:: python
 
@@ -511,9 +511,9 @@ See the :ref:`Grouping section <groupby>`
 .. ipython:: python
 
    df = pd.DataFrame({'A' : ['foo', 'bar', 'foo', 'bar',
-                            'foo', 'bar', 'foo', 'foo'],
+                             'foo', 'bar', 'foo', 'foo'],
                       'B' : ['one', 'one', 'two', 'three',
-                            'two', 'two', 'one', 'three'],
+                             'two', 'two', 'one', 'three'],
                       'C' : np.random.randn(8),
                       'D' : np.random.randn(8)})
    df
@@ -551,7 +551,8 @@ Stack
    df2 = df[:4]
    df2
 
-The ``stack`` function "compresses" a level in the DataFrame's columns.
+The :meth:`~DataFrame.stack` method "compresses" a level in the DataFrame's
+columns.
 
 .. ipython:: python
 
@@ -559,8 +560,8 @@ The ``stack`` function "compresses" a level in the DataFrame's columns.
    stacked
 
 With a "stacked" DataFrame or Series (having a ``MultiIndex`` as the
-``index``), the inverse operation of ``stack`` is ``unstack``, which by default
-unstacks the **last level**:
+``index``), the inverse operation of :meth:`~DataFrame.stack` is
+:meth:`~DataFrame.unstack`, which by default unstacks the **last level**:
 
 .. ipython:: python
 
@@ -600,7 +601,7 @@ financial applications. See the :ref:`Time Series section <timeseries>`
 
    rng = pd.date_range('1/1/2012', periods=100, freq='S')
    ts = pd.Series(np.random.randint(0, 500, len(rng)), index=rng)
-   ts.resample('5Min', how='sum')
+   ts.resample('5Min').sum()
 
 Time zone representation
 
@@ -676,7 +677,7 @@ Sorting is per order in the categories, not lexical order.
 
 .. ipython:: python
 
-    df.sort("grade")
+    df.sort_values(by="grade")
 
 Grouping by a categorical column shows also empty categories.
 
@@ -695,8 +696,6 @@ Plotting
 
    import matplotlib.pyplot as plt
    plt.close('all')
-   from pandas import options
-   options.display.mpl_style='default'
 
 .. ipython:: python
 
@@ -706,7 +705,8 @@ Plotting
    @savefig series_plot_basic.png
    ts.plot()
 
-On DataFrame, ``plot`` is a convenience to plot all of the columns with labels:
+On DataFrame, :meth:`~DataFrame.plot` is a convenience to plot all of the
+columns with labels:
 
 .. ipython:: python
 

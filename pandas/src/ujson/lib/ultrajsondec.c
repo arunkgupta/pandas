@@ -76,12 +76,6 @@ static JSOBJ SetError( struct DecoderState *ds, int offset, const char *message)
   return NULL;
 }
 
-static void ClearError( struct DecoderState *ds)
-{
-  ds->dec->errorOffset = 0;
-  ds->dec->errorStr = NULL;
-}
-
 double createDouble(double intNeg, double intValue, double frcValue, int frcDecimalCount)
 {
   static const double g_pow10[] = {1.0, 0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001,0.0000001, 0.00000001, 0.000000001, 0.0000000001, 0.00000000001, 0.000000000001, 0.0000000000001, 0.00000000000001, 0.000000000000001};
@@ -443,7 +437,7 @@ FASTCALL_ATTR JSOBJ FASTCALL_MSVC decode_string ( struct DecoderState *ds)
 
     if (ds->escHeap)
     {
-      if (newSize > (UINT_MAX / sizeof(wchar_t)))
+      if (newSize > (SIZE_MAX / sizeof(wchar_t)))
       {
         return SetError(ds, -1, "Could not reserve memory block");
       }
@@ -458,8 +452,7 @@ FASTCALL_ATTR JSOBJ FASTCALL_MSVC decode_string ( struct DecoderState *ds)
     else
     {
       wchar_t *oldStart = ds->escStart;
-      ds->escHeap = 1;
-      if (newSize > (UINT_MAX / sizeof(wchar_t)))
+      if (newSize > (SIZE_MAX / sizeof(wchar_t)))
       {
         return SetError(ds, -1, "Could not reserve memory block");
       }
@@ -468,6 +461,7 @@ FASTCALL_ATTR JSOBJ FASTCALL_MSVC decode_string ( struct DecoderState *ds)
       {
         return SetError(ds, -1, "Could not reserve memory block");
       }
+      ds->escHeap = 1;
       memcpy(ds->escStart, oldStart, escLen * sizeof(wchar_t));
     }
 
@@ -803,7 +797,7 @@ FASTCALL_ATTR JSOBJ FASTCALL_MSVC decode_object( struct DecoderState *ds)
       return NULL;
     }
 
-  if (!ds->dec->objectAddKey (ds->prv, newObj, itemName, itemValue)) 
+  if (!ds->dec->objectAddKey (ds->prv, newObj, itemName, itemValue))
   {
     ds->dec->releaseObject(ds->prv, newObj, ds->dec);
     ds->dec->releaseObject(ds->prv, itemName, ds->dec);
@@ -907,7 +901,7 @@ JSOBJ JSON_DecodeObject(JSONObjectDecoder *dec, const char *buffer, size_t cbBuf
     setlocale(LC_NUMERIC, locale);
     free(locale);
   }
-  else 
+  else
   {
     ret = decode_any (&ds);
   }

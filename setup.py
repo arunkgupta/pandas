@@ -11,22 +11,32 @@ import sys
 import shutil
 import warnings
 import re
+import platform
+from distutils.version import LooseVersion
 
-# may need to work around setuptools bug by providing a fake Pyrex
+def is_platform_windows():
+    return sys.platform == 'win32' or sys.platform == 'cygwin'
+
+def is_platform_linux():
+    return sys.platform == 'linux2'
+
+def is_platform_mac():
+    return sys.platform == 'darwin'
+
+# versioning
+import versioneer
+cmdclass = versioneer.get_cmdclass()
+
+min_cython_ver = '0.19.1'
 try:
     import Cython
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "fake_pyrex"))
+    ver = Cython.__version__
+    _CYTHON_INSTALLED = ver >= LooseVersion(min_cython_ver)
 except ImportError:
-    pass
+    _CYTHON_INSTALLED = False
 
-# try bootstrapping setuptools if it doesn't exist
 try:
     import pkg_resources
-    try:
-        pkg_resources.require("setuptools>=0.6c5")
-    except pkg_resources.VersionConflict:
-        from ez_setup import use_setuptools
-        use_setuptools(version="0.6c5")
     from setuptools import setup, Command
     _have_setuptools = True
 except ImportError:
@@ -70,12 +80,12 @@ else:
 
 from distutils.extension import Extension
 from distutils.command.build import build
-from distutils.command.sdist import sdist
 from distutils.command.build_ext import build_ext as _build_ext
 
 try:
+    if not _CYTHON_INSTALLED:
+        raise ImportError('No supported version of Cython installed.')
     from Cython.Distutils import build_ext as _build_ext
-    # from Cython.Distutils import Extension # to get pyrex debugging symbols
     cython = True
 except ImportError:
     cython = False
@@ -170,91 +180,19 @@ EMAIL = "pydata@googlegroups.com"
 URL = "http://pandas.pydata.org"
 DOWNLOAD_URL = ''
 CLASSIFIERS = [
-    'Development Status :: 4 - Beta',
+    'Development Status :: 5 - Production/Stable',
     'Environment :: Console',
     'Operating System :: OS Independent',
     'Intended Audience :: Science/Research',
     'Programming Language :: Python',
     'Programming Language :: Python :: 2',
     'Programming Language :: Python :: 3',
-    'Programming Language :: Python :: 2.6',
     'Programming Language :: Python :: 2.7',
-    'Programming Language :: Python :: 3.2',
-    'Programming Language :: Python :: 3.3',
     'Programming Language :: Python :: 3.4',
+    'Programming Language :: Python :: 3.5',
     'Programming Language :: Cython',
     'Topic :: Scientific/Engineering',
 ]
-
-MAJOR = 0
-MINOR = 15
-MICRO = 2
-ISRELEASED = False
-VERSION = '%d.%d.%d' % (MAJOR, MINOR, MICRO)
-QUALIFIER = ''
-
-FULLVERSION = VERSION
-write_version = True
-
-if not ISRELEASED:
-    import subprocess
-    FULLVERSION += '.dev'
-
-    pipe = None
-    for cmd in ['git','git.cmd']:
-        try:
-            pipe = subprocess.Popen([cmd, "describe", "--always", "--match", "v[0-9]*"],
-                                stdout=subprocess.PIPE)
-            (so,serr) = pipe.communicate()
-            if pipe.returncode == 0:
-                break
-        except:
-            pass
-
-    if pipe is None or pipe.returncode != 0:
-        # no git, or not in git dir
-        if os.path.exists('pandas/version.py'):
-            warnings.warn("WARNING: Couldn't get git revision, using existing pandas/version.py")
-            write_version = False
-        else:
-            warnings.warn("WARNING: Couldn't get git revision, using generic version string")
-    else:
-      # have git, in git dir, but may have used a shallow clone (travis does this)
-      rev = so.strip()
-      # makes distutils blow up on Python 2.7
-      if sys.version_info[0] >= 3:
-          rev = rev.decode('ascii')
-
-      if not rev.startswith('v') and re.match("[a-zA-Z0-9]{7,9}",rev):
-          # partial clone, manually construct version string
-          # this is the format before we started using git-describe
-          # to get an ordering on dev version strings.
-          rev ="v%s.dev-%s" % (VERSION, rev)
-
-      # Strip leading v from tags format "vx.y.z" to get th version string
-      FULLVERSION = rev.lstrip('v')
-
-else:
-    FULLVERSION += QUALIFIER
-
-
-def write_version_py(filename=None):
-    cnt = """\
-version = '%s'
-short_version = '%s'
-"""
-    if not filename:
-        filename = os.path.join(
-            os.path.dirname(__file__), 'pandas', 'version.py')
-
-    a = open(filename, 'w')
-    try:
-        a.write(cnt % (FULLVERSION, VERSION))
-    finally:
-        a.close()
-
-if write_version:
-    write_version_py()
 
 class CleanCommand(Command):
     """Custom distutils command to clean the .so and .pyc files."""
@@ -265,31 +203,37 @@ class CleanCommand(Command):
         self.all = True
         self._clean_me = []
         self._clean_trees = []
-        self._clean_exclude = ['np_datetime.c',
-                               'np_datetime_strings.c',
-                               'period.c',
-                               'tokenizer.c',
-                               'io.c',
-                               'ujson.c',
-                               'objToJSON.c',
-                               'JSONtoObj.c',
-                               'ultrajsonenc.c',
-                               'ultrajsondec.c',
+
+        base = pjoin('pandas','src')
+        dt = pjoin(base,'datetime')
+        src = base
+        util = pjoin('pandas','util')
+        parser = pjoin(base,'parser')
+        ujson_python = pjoin(base,'ujson','python')
+        ujson_lib = pjoin(base,'ujson','lib')
+        self._clean_exclude = [pjoin(dt,'np_datetime.c'),
+                               pjoin(dt,'np_datetime_strings.c'),
+                               pjoin(src,'period_helper.c'),
+                               pjoin(parser,'tokenizer.c'),
+                               pjoin(parser,'io.c'),
+                               pjoin(ujson_python,'ujson.c'),
+                               pjoin(ujson_python,'objToJSON.c'),
+                               pjoin(ujson_python,'JSONtoObj.c'),
+                               pjoin(ujson_lib,'ultrajsonenc.c'),
+                               pjoin(ujson_lib,'ultrajsondec.c'),
+                               pjoin(util,'move.c'),
                                ]
 
         for root, dirs, files in os.walk('pandas'):
             for f in files:
-                if f in self._clean_exclude:
-                    continue
-
-                # XXX
-                if 'ujson' in f:
+                filepath = pjoin(root, f)
+                if filepath in self._clean_exclude:
                     continue
 
                 if os.path.splitext(f)[-1] in ('.pyc', '.so', '.o',
                                                '.pyo',
                                                '.pyd', '.c', '.orig'):
-                    self._clean_me.append(pjoin(root, f))
+                    self._clean_me.append(filepath)
             for d in dirs:
                 if d == '__pycache__':
                     self._clean_trees.append(pjoin(root, d))
@@ -314,7 +258,11 @@ class CleanCommand(Command):
                 pass
 
 
-class CheckSDist(sdist):
+# we need to inherit from the versioneer
+# class as it encodes the version info
+sdist_class = cmdclass['sdist']
+
+class CheckSDist(sdist_class):
     """Custom sdist that ensures Cython has compiled all pyx files to c."""
 
     _pyxfiles = ['pandas/lib.pyx',
@@ -323,11 +271,13 @@ class CheckSDist(sdist):
                  'pandas/index.pyx',
                  'pandas/algos.pyx',
                  'pandas/parser.pyx',
+                 'pandas/src/period.pyx',
                  'pandas/src/sparse.pyx',
-                 'pandas/src/testing.pyx']
+                 'pandas/src/testing.pyx',
+                 'pandas/io/sas/saslib.pyx']
 
     def initialize_options(self):
-        sdist.initialize_options(self)
+        sdist_class.initialize_options(self)
 
         '''
         self._pyxfiles = []
@@ -346,11 +296,14 @@ class CheckSDist(sdist):
                 msg = "C-source file '%s' not found." % (cfile) +\
                     " Run 'setup.py cython' before sdist."
                 assert os.path.isfile(cfile), msg
-        sdist.run(self)
+        sdist_class.run(self)
 
 
 class CheckingBuildExt(build_ext):
-    """Subclass build_ext to get clearer report if Cython is necessary."""
+    """
+    Subclass build_ext to get clearer report if Cython is necessary.
+
+    """
 
     def check_cython_extensions(self, extensions):
         for ext in extensions:
@@ -388,9 +341,8 @@ class DummyBuildSrc(Command):
     def run(self):
         pass
 
-cmdclass = {'clean': CleanCommand,
-            'build': build,
-            'sdist': CheckSDist}
+cmdclass.update({'clean': CleanCommand,
+                 'build': build})
 
 try:
     from wheel.bdist_wheel import bdist_wheel
@@ -434,6 +386,11 @@ common_include = ['pandas/src/klib', 'pandas/src']
 def pxd(name):
     return os.path.abspath(pjoin('pandas', name + '.pxd'))
 
+# args to ignore warnings
+if is_platform_windows():
+    extra_compile_args=[]
+else:
+    extra_compile_args=['-Wno-unused-function']
 
 lib_depends = lib_depends + ['pandas/src/numpy_helper.h',
                              'pandas/src/parse_helper.h']
@@ -441,36 +398,47 @@ lib_depends = lib_depends + ['pandas/src/numpy_helper.h',
 
 tseries_depends = ['pandas/src/datetime/np_datetime.h',
                    'pandas/src/datetime/np_datetime_strings.h',
-                   'pandas/src/period.h']
+                   'pandas/src/period_helper.h']
 
 
 # some linux distros require it
-libraries = ['m'] if 'win32' not in sys.platform else []
+libraries = ['m'] if not is_platform_windows() else []
 
 ext_data = dict(
     lib={'pyxfile': 'lib',
          'pxdfiles': [],
          'depends': lib_depends},
     hashtable={'pyxfile': 'hashtable',
-               'pxdfiles': ['hashtable']},
+               'pxdfiles': ['hashtable'],
+               'depends': ['pandas/src/klib/khash_python.h']},
     tslib={'pyxfile': 'tslib',
            'depends': tseries_depends,
            'sources': ['pandas/src/datetime/np_datetime.c',
                        'pandas/src/datetime/np_datetime_strings.c',
-                       'pandas/src/period.c']},
+                       'pandas/src/period_helper.c']},
+    _period={'pyxfile': 'src/period',
+             'depends': tseries_depends,
+             'sources': ['pandas/src/datetime/np_datetime.c',
+                         'pandas/src/datetime/np_datetime_strings.c',
+                         'pandas/src/period_helper.c']},
     index={'pyxfile': 'index',
            'sources': ['pandas/src/datetime/np_datetime.c',
                        'pandas/src/datetime/np_datetime_strings.c']},
     algos={'pyxfile': 'algos',
+           'pxdfiles': ['src/skiplist'],
            'depends': [srcpath('generated', suffix='.pyx'),
-                       srcpath('join', suffix='.pyx')]},
-    parser=dict(pyxfile='parser',
-                depends=['pandas/src/parser/tokenizer.h',
-                         'pandas/src/parser/io.h',
-                         'pandas/src/numpy_helper.h'],
-                sources=['pandas/src/parser/tokenizer.c',
-                         'pandas/src/parser/io.c'])
+                       srcpath('join', suffix='.pyx'),
+                       'pandas/src/skiplist.pyx',
+                       'pandas/src/skiplist.h']},
+    parser={'pyxfile': 'parser',
+            'depends': ['pandas/src/parser/tokenizer.h',
+                        'pandas/src/parser/io.h',
+                        'pandas/src/numpy_helper.h'],
+            'sources': ['pandas/src/parser/tokenizer.c',
+                        'pandas/src/parser/io.c']},
 )
+
+ext_data["io.sas.saslib"] = {'pyxfile': 'io/sas/saslib'}
 
 extensions = []
 
@@ -487,7 +455,8 @@ for name, data in ext_data.items():
     obj = Extension('pandas.%s' % name,
                     sources=sources,
                     depends=data.get('depends', []),
-                    include_dirs=include)
+                    include_dirs=include,
+                    extra_compile_args=extra_compile_args)
 
     extensions.append(obj)
 
@@ -495,37 +464,53 @@ for name, data in ext_data.items():
 sparse_ext = Extension('pandas._sparse',
                        sources=[srcpath('sparse', suffix=suffix)],
                        include_dirs=[],
-                       libraries=libraries)
+                       libraries=libraries,
+                       extra_compile_args=extra_compile_args)
 
 extensions.extend([sparse_ext])
 
 testing_ext = Extension('pandas._testing',
                        sources=[srcpath('testing', suffix=suffix)],
                        include_dirs=[],
-                       libraries=libraries)
+                       libraries=libraries,
+                       extra_compile_args=extra_compile_args)
 
 extensions.extend([testing_ext])
 
 #----------------------------------------------------------------------
-# msgpack stuff here
+# msgpack
 
 if sys.byteorder == 'big':
     macros = [('__BIG_ENDIAN__', '1')]
 else:
     macros = [('__LITTLE_ENDIAN__', '1')]
 
-msgpack_ext = Extension('pandas.msgpack',
-                        sources = [srcpath('msgpack',
+packer_ext = Extension('pandas.msgpack._packer',
+                        depends=['pandas/src/msgpack/pack.h',
+                                 'pandas/src/msgpack/pack_template.h'],
+                        sources = [srcpath('_packer',
                                    suffix=suffix if suffix == '.pyx' else '.cpp',
-                                   subdir='')],
+                                   subdir='msgpack')],
                         language='c++',
-                        include_dirs=common_include,
-                        define_macros=macros)
+                        include_dirs=['pandas/src/msgpack'] + common_include,
+                        define_macros=macros,
+                        extra_compile_args=extra_compile_args)
+unpacker_ext = Extension('pandas.msgpack._unpacker',
+                        depends=['pandas/src/msgpack/unpack.h',
+                                 'pandas/src/msgpack/unpack_define.h',
+                                 'pandas/src/msgpack/unpack_template.h'],
+                        sources = [srcpath('_unpacker',
+                                   suffix=suffix if suffix == '.pyx' else '.cpp',
+                                   subdir='msgpack')],
+                        language='c++',
+                        include_dirs=['pandas/src/msgpack'] + common_include,
+                        define_macros=macros,
+                        extra_compile_args=extra_compile_args)
+extensions.append(packer_ext)
+extensions.append(unpacker_ext)
 
-extensions.append(msgpack_ext)
-
-# if not ISRELEASED:
-#     extensions.extend([sandbox_ext])
+#----------------------------------------------------------------------
+# ujson
 
 if suffix == '.pyx' and 'setuptools' in sys.modules:
     # undo dumb setuptools bug clobbering .pyx sources back to .c
@@ -547,10 +532,18 @@ ujson_ext = Extension('pandas.json',
                       include_dirs=['pandas/src/ujson/python',
                                     'pandas/src/ujson/lib',
                                     'pandas/src/datetime'] + common_include,
-                      extra_compile_args=['-D_GNU_SOURCE'])
+                      extra_compile_args=['-D_GNU_SOURCE'] + extra_compile_args)
 
 
 extensions.append(ujson_ext)
+
+#----------------------------------------------------------------------
+# util
+# extension for pseudo-safely moving bytes into mutable buffers
+_move_ext = Extension('pandas.util._move',
+                      depends=[],
+                      sources=['pandas/util/move.c'])
+extensions.append(_move_ext)
 
 
 if _have_setuptools:
@@ -560,14 +553,17 @@ if _have_setuptools:
 # if you change something, be careful.
 
 setup(name=DISTNAME,
-      version=FULLVERSION,
       maintainer=AUTHOR,
+      version=versioneer.get_version(),
       packages=['pandas',
                 'pandas.compat',
                 'pandas.computation',
                 'pandas.computation.tests',
                 'pandas.core',
+                'pandas.indexes',
                 'pandas.io',
+                'pandas.io.sas',
+                'pandas.formats',
                 'pandas.rpy',
                 'pandas.sandbox',
                 'pandas.sparse',
@@ -575,22 +571,27 @@ setup(name=DISTNAME,
                 'pandas.stats',
                 'pandas.util',
                 'pandas.tests',
+                'pandas.tests.frame',
+                'pandas.tests.indexes',
+                'pandas.tests.series',
+                'pandas.tests.formats',
+                'pandas.tests.types',
                 'pandas.tests.test_msgpack',
                 'pandas.tools',
                 'pandas.tools.tests',
                 'pandas.tseries',
                 'pandas.tseries.tests',
+                'pandas.types',
                 'pandas.io.tests',
                 'pandas.io.tests.test_json',
                 'pandas.stats.tests',
+                'pandas.msgpack'
                 ],
       package_data={'pandas.io': ['tests/data/legacy_hdf/*.h5',
-                                  'tests/data/legacy_pickle/0.10.1/*.pickle',
-                                  'tests/data/legacy_pickle/0.11.0/*.pickle',
-                                  'tests/data/legacy_pickle/0.12.0/*.pickle',
-                                  'tests/data/legacy_pickle/0.13.0/*.pickle',
-                                  'tests/data/legacy_pickle/0.14.0/*.pickle',
-                                  'tests/data/*.csv',
+                                  'tests/data/legacy_pickle/*/*.pickle',
+                                  'tests/data/legacy_msgpack/*/*.msgpack',
+                                  'tests/data/*.csv*',
+                                  'tests/data/*.xpt',
                                   'tests/data/*.dta',
                                   'tests/data/*.txt',
                                   'tests/data/*.xls',
@@ -603,6 +604,8 @@ setup(name=DISTNAME,
                     'pandas.tools': ['tests/*.csv'],
                     'pandas.tests': ['data/*.pickle',
                                      'data/*.csv'],
+                    'pandas.tests.formats': ['data/*.csv'],
+                    'pandas.tests.indexes': ['data/*.pickle'],
                     'pandas.tseries.tests': ['data/*.pickle',
                                              'data/*.csv']
                     },

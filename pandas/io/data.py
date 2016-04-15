@@ -3,6 +3,8 @@ Module contains tools for collecting data from various remote sources
 
 
 """
+# flake8: noqa
+
 import warnings
 import tempfile
 import datetime as dt
@@ -22,6 +24,15 @@ from pandas.io.common import urlopen, ZipFile, urlencode
 from pandas.tseries.offsets import MonthEnd
 from pandas.util.testing import _network_error_classes
 from pandas.io.html import read_html
+
+warnings.warn("\n"
+              "The pandas.io.data module is moved to a separate package "
+              "(pandas-datareader) and will be removed from pandas in a "
+              "future version.\nAfter installing the pandas-datareader package "
+              "(https://github.com/pydata/pandas-datareader), you can change "
+              "the import ``from pandas.io import data, wb`` to "
+              "``from pandas_datareader import data, wb``.",
+              FutureWarning)
 
 class SymbolWarning(UserWarning):
     pass
@@ -44,12 +55,17 @@ def DataReader(name, data_source=None, start=None, end=None,
     name : str or list of strs
         the name of the dataset. Some data sources (yahoo, google, fred) will
         accept a list of names.
-    data_source: str
+    data_source: str, default: None
         the data source ("yahoo", "google", "fred", or "ff")
-    start : {datetime, None}
+    start : datetime, default: None
         left boundary for range (defaults to 1/1/2010)
-    end : {datetime, None}
+    end : datetime, default: None
         right boundary for range (defaults to today)
+    retry_count : int, default 3
+        Number of times to retry query request.
+    pause : numeric, default 0.001
+        Time, in seconds, to pause between consecutive queries of chunks. If
+        single value given for symbol, represents the pause between retries.
 
     Examples
     ----------
@@ -171,6 +187,14 @@ def _retry_read_url(url, retry_count, pause, name):
             # return 2 rows for the most recent business day
             if len(rs) > 2 and rs.index[-1] == rs.index[-2]:  # pragma: no cover
                 rs = rs[:-1]
+
+            #Get rid of unicode characters in index name.
+            try:
+                rs.index.name = rs.index.name.decode('unicode_escape').encode('ascii', 'ignore')
+            except AttributeError:
+                #Python 3 string has no decode method.
+                rs.index.name = rs.index.name.encode('ascii', 'ignore').decode()
+
             return rs
 
     raise IOError("after %d tries, %s did not "
@@ -180,7 +204,7 @@ def _retry_read_url(url, retry_count, pause, name):
 _HISTORICAL_YAHOO_URL = 'http://ichart.finance.yahoo.com/table.csv?'
 
 
-def _get_hist_yahoo(sym, start, end, retry_count, pause):
+def _get_hist_yahoo(sym, start, end, interval, retry_count, pause):
     """
     Get historical data for the given name from yahoo.
     Date format is datetime
@@ -195,7 +219,7 @@ def _get_hist_yahoo(sym, start, end, retry_count, pause):
            '&d=%s' % (end.month - 1) +
            '&e=%s' % end.day +
            '&f=%s' % end.year +
-           '&g=d' +
+           '&g=%s' % interval +
            '&ignore=.csv')
     return _retry_read_url(url, retry_count, pause, 'Yahoo!')
 
@@ -203,7 +227,7 @@ def _get_hist_yahoo(sym, start, end, retry_count, pause):
 _HISTORICAL_GOOGLE_URL = 'http://www.google.com/finance/historical?'
 
 
-def _get_hist_google(sym, start, end, retry_count, pause):
+def _get_hist_google(sym, start, end, interval, retry_count, pause):
     """
     Get historical data for the given name from google.
     Date format is datetime
@@ -314,22 +338,27 @@ def get_components_yahoo(idx_sym):
     return idx_df
 
 
-def _dl_mult_symbols(symbols, start, end, chunksize, retry_count, pause,
+def _dl_mult_symbols(symbols, start, end, interval, chunksize, retry_count, pause,
                      method):
     stocks = {}
     failed = []
+    passed = []
     for sym_group in _in_chunks(symbols, chunksize):
         for sym in sym_group:
             try:
-                stocks[sym] = method(sym, start, end, retry_count, pause)
+                stocks[sym] = method(sym, start, end, interval, retry_count, pause)
+                passed.append(sym)
             except IOError:
                 warnings.warn('Failed to read symbol: {0!r}, replacing with '
                               'NaN.'.format(sym), SymbolWarning)
                 failed.append(sym)
 
+    if len(passed) == 0:
+        raise RemoteDataError("No data fetched using "
+                              "{0!r}".format(method.__name__))
     try:
-        if len(stocks) > 0 and len(failed) > 0:
-            df_na = stocks.values()[0].copy()
+        if len(stocks) > 0 and len(failed) > 0 and len(passed) > 0:
+            df_na = stocks[passed[0]].copy()
             df_na[:] = np.nan
             for sym in failed:
                 stocks[sym] = df_na
@@ -339,24 +368,23 @@ def _dl_mult_symbols(symbols, start, end, chunksize, retry_count, pause,
         raise RemoteDataError("No data fetched using "
                               "{0!r}".format(method.__name__))
 
-
 _source_functions = {'google': _get_hist_google, 'yahoo': _get_hist_yahoo}
 
 
-def _get_data_from(symbols, start, end, retry_count, pause, adjust_price,
+def _get_data_from(symbols, start, end, interval, retry_count, pause, adjust_price,
                    ret_index, chunksize, source):
 
     src_fn = _source_functions[source]
 
     # If a single symbol, (e.g., 'GOOG')
     if isinstance(symbols, (compat.string_types, int)):
-        hist_data = src_fn(symbols, start, end, retry_count, pause)
+        hist_data = src_fn(symbols, start, end, interval, retry_count, pause)
     # Or multiple symbols, (e.g., ['GOOG', 'AAPL', 'MSFT'])
     elif isinstance(symbols, DataFrame):
-        hist_data = _dl_mult_symbols(symbols.index, start, end, chunksize,
+        hist_data = _dl_mult_symbols(symbols.index, start, end, interval, chunksize,
                                      retry_count, pause, src_fn)
     else:
-        hist_data = _dl_mult_symbols(symbols, start, end, chunksize,
+        hist_data = _dl_mult_symbols(symbols, start, end, interval, chunksize,
                                      retry_count, pause, src_fn)
     if source.lower() == 'yahoo':
         if ret_index:
@@ -369,7 +397,7 @@ def _get_data_from(symbols, start, end, retry_count, pause, adjust_price,
 
 def get_data_yahoo(symbols=None, start=None, end=None, retry_count=3,
                    pause=0.001, adjust_price=False, ret_index=False,
-                   chunksize=25):
+                   chunksize=25, interval='d'):
     """
     Returns DataFrame/Panel of historical stock prices from symbols, over date
     range, start to end. To avoid being penalized by Yahoo! Finance servers,
@@ -377,33 +405,38 @@ def get_data_yahoo(symbols=None, start=None, end=None, retry_count=3,
 
     Parameters
     ----------
-    symbols : string, array-like object (list, tuple, Series), or DataFrame
+    symbols : string, array-like object (list, tuple, Series), or DataFrame, default: None
         Single stock symbol (ticker), array-like object of symbols or
-        DataFrame with index containing stock symbols.
+        DataFrame with index containing stock symbols
     start : string, (defaults to '1/1/2010')
         Starting date, timestamp. Parses many different kind of date
         representations (e.g., 'JAN-01-2010', '1/1/10', 'Jan, 1, 1980')
     end : string, (defaults to today)
         Ending date, timestamp. Same format as starting date.
-    retry_count : int, default 3
+    retry_count : int, default: 3
         Number of times to retry query request.
-    pause : int, default 0
+    pause : numeric, default: 0.001
         Time, in seconds, to pause between consecutive queries of chunks. If
         single value given for symbol, represents the pause between retries.
-    adjust_price : bool, default False
+    adjust_price : bool, default: False
         If True, adjusts all prices in hist_data ('Open', 'High', 'Low',
         'Close') based on 'Adj Close' price. Adds 'Adj_Ratio' column and drops
         'Adj Close'.
-    ret_index : bool, default False
+    ret_index : bool, default: False
         If True, includes a simple return index 'Ret_Index' in hist_data.
-    chunksize : int, default 25
+    chunksize : int, default: 25
         Number of symbols to download consecutively before intiating pause.
+    interval : string, default: 'd'
+        Time interval code, valid values are 'd' for daily, 'w' for weekly,
+        'm' for monthly and 'v' for dividend.
 
     Returns
     -------
     hist_data : DataFrame (str) or Panel (array-like object, DataFrame)
     """
-    return _get_data_from(symbols, start, end, retry_count, pause,
+    if interval not in ['d', 'w', 'm', 'v']:
+        raise ValueError("Invalid interval: valid values are 'd', 'w', 'm' and 'v'")
+    return _get_data_from(symbols, start, end, interval, retry_count, pause,
                           adjust_price, ret_index, chunksize, 'yahoo')
 
 
@@ -425,19 +458,21 @@ def get_data_google(symbols=None, start=None, end=None, retry_count=3,
         representations (e.g., 'JAN-01-2010', '1/1/10', 'Jan, 1, 1980')
     end : string, (defaults to today)
         Ending date, timestamp. Same format as starting date.
-    retry_count : int, default 3
+    retry_count : int, default: 3
         Number of times to retry query request.
-    pause : int, default 0
+    pause : numeric, default: 0.001
         Time, in seconds, to pause between consecutive queries of chunks. If
         single value given for symbol, represents the pause between retries.
-    chunksize : int, default 25
+    chunksize : int, default: 25
         Number of symbols to download consecutively before intiating pause.
+    ret_index : bool, default: False
+        If True, includes a simple return index 'Ret_Index' in hist_data.
 
     Returns
     -------
     hist_data : DataFrame (str) or Panel (array-like object, DataFrame)
     """
-    return _get_data_from(symbols, start, end, retry_count, pause,
+    return _get_data_from(symbols, start, end, None, retry_count, pause,
                           adjust_price, ret_index, chunksize, 'google')
 
 
@@ -487,7 +522,7 @@ _FAMAFRENCH_URL = 'http://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp'
 
 def get_data_famafrench(name):
     # path of zip files
-    zip_file_path = '{0}/{1}.zip'.format(_FAMAFRENCH_URL, name)
+    zip_file_path = '{0}/{1}_TXT.zip'.format(_FAMAFRENCH_URL, name)
 
     with urlopen(zip_file_path) as url:
         raw = url.read()
@@ -582,7 +617,7 @@ class Options(object):
         self.symbol = symbol.upper()
         if data_source is None:
             warnings.warn("Options(symbol) is deprecated, use Options(symbol,"
-                          " data_source) instead", FutureWarning)
+                          " data_source) instead", FutureWarning, stacklevel=2)
             data_source = "yahoo"
         if data_source != "yahoo":
             raise NotImplementedError("currently only yahoo supported")
@@ -681,38 +716,50 @@ class Options(object):
 
         if not hasattr(self, 'underlying_price'):
             try:
-                self.underlying_price, self.quote_time = self._get_underlying_price(url)
+                self.underlying_price, self.quote_time = self._underlying_price_and_time_from_url(url)
             except IndexError:
                 self.underlying_price, self.quote_time = np.nan, np.nan
 
         calls = frames[self._TABLE_LOC['calls']]
         puts = frames[self._TABLE_LOC['puts']]
 
-        if len(calls) == 0 or len(puts) == 0:
-            raise RemoteDataError('Received no data from Yahoo at url: %s' % url)
-
         calls = self._process_data(calls, 'call')
         puts = self._process_data(puts, 'put')
 
         return {'calls': calls, 'puts': puts}
 
-    def _get_underlying_price(self, url):
+    def _underlying_price_and_time_from_url(self, url):
         root = self._parse_url(url)
-        underlying_price = float(root.xpath('.//*[@class="time_rtq_ticker Fz-30 Fw-b"]')[0]\
-            .getchildren()[0].text)
+        underlying_price = self._underlying_price_from_root(root)
+        quote_time = self._quote_time_from_root(root)
+        return underlying_price, quote_time
 
+    @staticmethod
+    def _underlying_price_from_root(root):
+        underlying_price = root.xpath('.//*[@class="time_rtq_ticker Fz-30 Fw-b"]')[0]\
+            .getchildren()[0].text
+        underlying_price = underlying_price.replace(',', '') #GH11
+
+        try:
+            underlying_price = float(underlying_price)
+        except ValueError:
+            underlying_price = np.nan
+
+        return underlying_price
+
+    @staticmethod
+    def _quote_time_from_root(root):
         #Gets the time of the quote, note this is actually the time of the underlying price.
         try:
             quote_time_text = root.xpath('.//*[@class="time_rtq Fz-m"]')[0].getchildren()[1].getchildren()[0].text
             ##TODO: Enable timezone matching when strptime can match EST with %Z
             quote_time_text = quote_time_text.split(' ')[0]
             quote_time = dt.datetime.strptime(quote_time_text, "%I:%M%p")
-
             quote_time = quote_time.replace(year=CUR_YEAR, month=CUR_MONTH, day=CUR_DAY)
         except ValueError:
             quote_time = np.nan
 
-        return underlying_price, quote_time
+        return quote_time
 
     def _get_option_data(self, expiry, name):
         frame_name = '_frames' + self._expiry_to_string(expiry)
@@ -865,10 +912,10 @@ class Options(object):
             The number of strike prices above and below the stock price that
             should be taken
 
-        call : bool
+        call : bool, default: True
             Tells the function whether or not it should be using calls
 
-        put : bool
+        put : bool, default: False
             Tells the function weather or not it should be using puts
 
         month : number, int, optional(default=None)
@@ -979,7 +1026,7 @@ class Options(object):
         if expiry in expiry_dates:
             return expiry
         else:
-            index = DatetimeIndex(expiry_dates).order()
+            index = DatetimeIndex(expiry_dates).sort_values()
             return index[index.date >= expiry][0].date()
 
     def get_forward_data(self, months, call=True, put=False, near=False,
@@ -1034,7 +1081,8 @@ class Options(object):
                 Note: Format of returned data frame is dependent on Yahoo and may change.
 
         """
-        warnings.warn("get_forward_data() is deprecated", FutureWarning)
+        warnings.warn("get_forward_data() is deprecated", FutureWarning,
+                      stacklevel=2)
         end_date = dt.date.today() + MonthEnd(months)
         dates = (date for date in self.expiry_dates if date <= end_date.date())
         data = self._get_data_in_date_range(dates, call=call, put=put)

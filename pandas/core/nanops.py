@@ -1,8 +1,7 @@
-import sys
 import itertools
 import functools
-
 import numpy as np
+import operator
 
 try:
     import bottleneck as bn
@@ -10,25 +9,21 @@ try:
 except ImportError:  # pragma: no cover
     _USE_BOTTLENECK = False
 
-import pandas.core.common as com
 import pandas.hashtable as _hash
 from pandas import compat, lib, algos, tslib
-from pandas.compat import builtins
 from pandas.core.common import (isnull, notnull, _values_from_object,
-                                _maybe_upcast_putmask,
-                                ensure_float, _ensure_float64,
-                                _ensure_int64, _ensure_object,
-                                is_float, is_integer, is_complex,
-                                is_float_dtype, _is_floating_dtype,
+                                _maybe_upcast_putmask, _ensure_float64,
+                                _ensure_int64, _ensure_object, is_float,
+                                is_integer, is_complex, is_float_dtype,
                                 is_complex_dtype, is_integer_dtype,
                                 is_bool_dtype, is_object_dtype,
                                 is_datetime64_dtype, is_timedelta64_dtype,
-                                _is_datetime_or_timedelta_dtype,
-                                _is_int_or_datetime_dtype, _is_any_int_dtype)
+                                is_datetime_or_timedelta_dtype, _get_dtype,
+                                is_int_or_datetime_dtype, is_any_int_dtype,
+                                _int64_max)
 
 
 class disallow(object):
-
     def __init__(self, *dtypes):
         super(disallow, self).__init__()
         self.dtypes = tuple(np.dtype(dtype).type for dtype in dtypes)
@@ -43,14 +38,23 @@ class disallow(object):
             obj_iter = itertools.chain(args, compat.itervalues(kwargs))
             if any(self.check(obj) for obj in obj_iter):
                 raise TypeError('reduction operation {0!r} not allowed for '
-                                'this dtype'.format(f.__name__.replace('nan',
-                                                                       '')))
-            return f(*args, **kwargs)
+                                'this dtype'.format(
+                                    f.__name__.replace('nan', '')))
+            try:
+                return f(*args, **kwargs)
+            except ValueError as e:
+                # we want to transform an object array
+                # ValueError message to the more typical TypeError
+                # e.g. this is normally a disallowed function on
+                # object arrays that contain strings
+                if is_object_dtype(args[0]):
+                    raise TypeError(e)
+                raise
+
         return _f
 
 
 class bottleneck_switch(object):
-
     def __init__(self, zero_value=None, **kwargs):
         self.zero_value = zero_value
         self.kwargs = kwargs
@@ -84,8 +88,8 @@ class bottleneck_switch(object):
                         result.fill(0)
                         return result
 
-                if _USE_BOTTLENECK and skipna and _bn_ok_dtype(values.dtype,
-                                                               bn_name):
+                if (_USE_BOTTLENECK and skipna and
+                        _bn_ok_dtype(values.dtype, bn_name)):
                     result = bn_func(values, axis=axis, **kwds)
 
                     # prefer to treat inf/-inf as NA, but must compute the func
@@ -95,7 +99,17 @@ class bottleneck_switch(object):
                 else:
                     result = alt(values, axis=axis, skipna=skipna, **kwds)
             except Exception:
-                result = alt(values, axis=axis, skipna=skipna, **kwds)
+                try:
+                    result = alt(values, axis=axis, skipna=skipna, **kwds)
+                except ValueError as e:
+                    # we want to transform an object array
+                    # ValueError message to the more typical TypeError
+                    # e.g. this is normally a disallowed function on
+                    # object arrays that contain strings
+
+                    if is_object_dtype(values):
+                        raise TypeError(e)
+                    raise
 
             return result
 
@@ -104,8 +118,7 @@ class bottleneck_switch(object):
 
 def _bn_ok_dtype(dt, name):
     # Bottleneck chokes on datetime64
-    if (not is_object_dtype(dt) and
-            not _is_datetime_or_timedelta_dtype(dt)):
+    if (not is_object_dtype(dt) and not is_datetime_or_timedelta_dtype(dt)):
 
         # bottleneck does not properly upcast during the sum
         # so can overflow
@@ -125,7 +138,7 @@ def _has_infs(result):
             return lib.has_infs_f4(result.ravel())
     try:
         return np.isinf(result).any()
-    except (TypeError, NotImplementedError) as e:
+    except (TypeError, NotImplementedError):
         # if it doesn't support infs, then it can't have infs
         return False
 
@@ -148,7 +161,7 @@ def _get_fill_value(dtype, fill_value=None, fill_value_typ=None):
         else:
             if fill_value_typ == '+inf':
                 # need the max int here
-                return np.iinfo(np.int64).max
+                return _int64_max
             else:
                 return tslib.iNaT
 
@@ -156,8 +169,9 @@ def _get_fill_value(dtype, fill_value=None, fill_value_typ=None):
 def _get_values(values, skipna, fill_value=None, fill_value_typ=None,
                 isfinite=False, copy=True):
     """ utility to get the values view, mask, dtype
-        if necessary copy and mask using the specified fill_value
-        copy = True will force the copy """
+    if necessary copy and mask using the specified fill_value
+    copy = True will force the copy
+    """
     values = _values_from_object(values)
     if isfinite:
         mask = _isfinite(values)
@@ -198,7 +212,7 @@ def _get_values(values, skipna, fill_value=None, fill_value_typ=None,
 
 
 def _isfinite(values):
-    if _is_datetime_or_timedelta_dtype(values):
+    if is_datetime_or_timedelta_dtype(values):
         return isnull(values)
     if (is_complex_dtype(values) or is_float_dtype(values) or
             is_integer_dtype(values) or is_bool_dtype(values)):
@@ -207,11 +221,11 @@ def _isfinite(values):
 
 
 def _na_ok_dtype(dtype):
-    return not _is_int_or_datetime_dtype(dtype)
+    return not is_int_or_datetime_dtype(dtype)
 
 
 def _view_if_needed(values):
-    if _is_datetime_or_timedelta_dtype(values):
+    if is_datetime_or_timedelta_dtype(values):
         return values.view(np.int64)
     return values
 
@@ -226,7 +240,12 @@ def _wrap_results(result, dtype):
             result = result.view(dtype)
     elif is_timedelta64_dtype(dtype):
         if not isinstance(result, np.ndarray):
-            result = lib.Timedelta(result)
+
+            # raise if we have a timedelta64[ns] which is too large
+            if np.fabs(result) > _int64_max:
+                raise ValueError("overflow in timedelta operation")
+
+            result = lib.Timedelta(result, unit='ns')
         else:
             result = result.astype('i8').view(dtype)
 
@@ -247,7 +266,12 @@ def nanall(values, axis=None, skipna=True):
 @bottleneck_switch(zero_value=0)
 def nansum(values, axis=None, skipna=True):
     values, mask, dtype, dtype_max = _get_values(values, skipna, 0)
-    the_sum = values.sum(axis, dtype=dtype_max)
+    dtype_sum = dtype_max
+    if is_float_dtype(dtype):
+        dtype_sum = dtype
+    elif is_timedelta64_dtype(dtype):
+        dtype_sum = np.float64
+    the_sum = values.sum(axis, dtype=dtype_sum)
     the_sum = _maybe_null_out(the_sum, axis, mask)
 
     return _wrap_results(the_sum, dtype)
@@ -257,8 +281,16 @@ def nansum(values, axis=None, skipna=True):
 @bottleneck_switch()
 def nanmean(values, axis=None, skipna=True):
     values, mask, dtype, dtype_max = _get_values(values, skipna, 0)
-    the_sum = _ensure_numeric(values.sum(axis, dtype=dtype_max))
-    count = _get_counts(mask, axis)
+
+    dtype_sum = dtype_max
+    dtype_count = np.float64
+    if is_integer_dtype(dtype) or is_timedelta64_dtype(dtype):
+        dtype_sum = np.float64
+    elif is_float_dtype(dtype):
+        dtype_sum = dtype
+        dtype_count = dtype
+    count = _get_counts(mask, axis, dtype=dtype_count)
+    the_sum = _ensure_numeric(values.sum(axis, dtype=dtype_sum))
 
     if axis is not None and getattr(the_sum, 'ndim', False):
         the_mean = the_sum / count
@@ -283,8 +315,9 @@ def nanmedian(values, axis=None, skipna=True):
             return np.nan
         return algos.median(_values_from_object(x[mask]))
 
-    if values.dtype != np.float64:
+    if not is_float_dtype(values):
         values = values.astype('f8')
+        values[mask] = np.nan
 
     if axis is None:
         values = values.ravel()
@@ -295,7 +328,8 @@ def nanmedian(values, axis=None, skipna=True):
     if values.ndim > 1:
         # there's a non-empty array to apply over otherwise numpy raises
         if notempty:
-            return _wrap_results(np.apply_along_axis(get_median, axis, values), dtype)
+            return _wrap_results(
+                np.apply_along_axis(get_median, axis, values), dtype)
 
         # must return the correct shape, but median is not defined for the
         # empty set so return nans of shape "everything but the passed axis"
@@ -311,13 +345,13 @@ def nanmedian(values, axis=None, skipna=True):
     return _wrap_results(get_median(values) if notempty else np.nan, dtype)
 
 
-def _get_counts_nanvar(mask, axis, ddof):
-    count = _get_counts(mask, axis)
-
-    d = count-ddof
+def _get_counts_nanvar(mask, axis, ddof, dtype=float):
+    dtype = _get_dtype(dtype)
+    count = _get_counts(mask, axis, dtype=dtype)
+    d = count - dtype.type(ddof)
 
     # always return NaN, never inf
-    if np.isscalar(count):
+    if lib.isscalar(count):
         if count <= ddof:
             count = np.nan
             d = np.nan
@@ -329,110 +363,91 @@ def _get_counts_nanvar(mask, axis, ddof):
     return count, d
 
 
-def _nanvar(values, axis=None, skipna=True, ddof=1):
-    # private nanvar calculator
-    mask = isnull(values)
-    if not _is_floating_dtype(values):
-        values = values.astype('f8')
+@disallow('M8')
+@bottleneck_switch(ddof=1)
+def nanstd(values, axis=None, skipna=True, ddof=1):
+    result = np.sqrt(nanvar(values, axis=axis, skipna=skipna, ddof=ddof))
+    return _wrap_results(result, values.dtype)
 
-    count, d = _get_counts_nanvar(mask, axis, ddof)
+
+@disallow('M8')
+@bottleneck_switch(ddof=1)
+def nanvar(values, axis=None, skipna=True, ddof=1):
+
+    dtype = values.dtype
+    mask = isnull(values)
+    if is_any_int_dtype(values):
+        values = values.astype('f8')
+        values[mask] = np.nan
+
+    if is_float_dtype(values):
+        count, d = _get_counts_nanvar(mask, axis, ddof, values.dtype)
+    else:
+        count, d = _get_counts_nanvar(mask, axis, ddof)
 
     if skipna:
         values = values.copy()
         np.putmask(values, mask, 0)
 
-    X = _ensure_numeric(values.sum(axis))
-    XX = _ensure_numeric((values ** 2).sum(axis))
-    return np.fabs((XX - X ** 2 / count) / d)
+    # xref GH10242
+    # Compute variance via two-pass algorithm, which is stable against
+    # cancellation errors and relatively accurate for small numbers of
+    # observations.
+    #
+    # See https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+    avg = _ensure_numeric(values.sum(axis=axis, dtype=np.float64)) / count
+    if axis is not None:
+        avg = np.expand_dims(avg, axis)
+    sqr = _ensure_numeric((avg - values)**2)
+    np.putmask(sqr, mask, 0)
+    result = sqr.sum(axis=axis, dtype=np.float64) / d
 
-@disallow('M8')
-@bottleneck_switch(ddof=1)
-def nanstd(values, axis=None, skipna=True, ddof=1):
-
-    result = np.sqrt(_nanvar(values, axis=axis, skipna=skipna, ddof=ddof))
+    # Return variance as np.float64 (the datatype used in the accumulator),
+    # unless we were dealing with a float array, in which case use the same
+    # precision as the original values array.
+    if is_float_dtype(dtype):
+        result = result.astype(dtype)
     return _wrap_results(result, values.dtype)
 
-@disallow('M8','m8')
-@bottleneck_switch(ddof=1)
-def nanvar(values, axis=None, skipna=True, ddof=1):
 
-    # we are going to allow timedelta64[ns] here
-    # but NOT going to coerce them to the Timedelta type
-    # as this could cause overflow
-    # so var cannot be computed (but std can!)
-    return _nanvar(values, axis=axis, skipna=skipna, ddof=ddof)
-
-@disallow('M8','m8')
+@disallow('M8', 'm8')
 def nansem(values, axis=None, skipna=True, ddof=1):
     var = nanvar(values, axis, skipna, ddof=ddof)
 
     mask = isnull(values)
-    if not _is_floating_dtype(values):
+    if not is_float_dtype(values.dtype):
         values = values.astype('f8')
-    count, _ = _get_counts_nanvar(mask, axis, ddof)
+    count, _ = _get_counts_nanvar(mask, axis, ddof, values.dtype)
+    var = nanvar(values, axis, skipna, ddof=ddof)
 
-    return np.sqrt(var)/np.sqrt(count)
+    return np.sqrt(var) / np.sqrt(count)
 
 
-@bottleneck_switch()
-def nanmin(values, axis=None, skipna=True):
-    values, mask, dtype, dtype_max = _get_values(values, skipna,
-                                                 fill_value_typ='+inf')
+def _nanminmax(meth, fill_value_typ):
+    @bottleneck_switch()
+    def reduction(values, axis=None, skipna=True):
+        values, mask, dtype, dtype_max = _get_values(
+            values, skipna, fill_value_typ=fill_value_typ, )
 
-    # numpy 1.6.1 workaround in Python 3.x
-    if is_object_dtype(values) and compat.PY3:
-        if values.ndim > 1:
-            apply_ax = axis if axis is not None else 0
-            result = np.apply_along_axis(builtins.min, apply_ax, values)
-        else:
+        if ((axis is not None and values.shape[axis] == 0) or
+                values.size == 0):
             try:
-                result = builtins.min(values)
-            except:
-                result = np.nan
-    else:
-        if ((axis is not None and values.shape[axis] == 0)
-                or values.size == 0):
-            try:
-                result = ensure_float(values.sum(axis, dtype=dtype_max))
+                result = getattr(values, meth)(axis, dtype=dtype_max)
                 result.fill(np.nan)
             except:
                 result = np.nan
         else:
-            result = values.min(axis)
+            result = getattr(values, meth)(axis)
 
-    result = _wrap_results(result, dtype)
-    return _maybe_null_out(result, axis, mask)
+        result = _wrap_results(result, dtype)
+        return _maybe_null_out(result, axis, mask)
+
+    reduction.__name__ = 'nan' + meth
+    return reduction
 
 
-@bottleneck_switch()
-def nanmax(values, axis=None, skipna=True):
-    values, mask, dtype, dtype_max = _get_values(values, skipna,
-                                                 fill_value_typ='-inf')
-
-    # numpy 1.6.1 workaround in Python 3.x
-    if is_object_dtype(values) and compat.PY3:
-
-        if values.ndim > 1:
-            apply_ax = axis if axis is not None else 0
-            result = np.apply_along_axis(builtins.max, apply_ax, values)
-        else:
-            try:
-                result = builtins.max(values)
-            except:
-                result = np.nan
-    else:
-        if ((axis is not None and values.shape[axis] == 0)
-                or values.size == 0):
-            try:
-                result = ensure_float(values.sum(axis, dtype=dtype_max))
-                result.fill(np.nan)
-            except:
-                result = np.nan
-        else:
-            result = values.max(axis)
-
-    result = _wrap_results(result, dtype)
-    return _maybe_null_out(result, axis, mask)
+nanmin = _nanminmax('min', fill_value_typ='+inf')
+nanmax = _nanminmax('max', fill_value_typ='-inf')
 
 
 def nanargmax(values, axis=None, skipna=True):
@@ -457,80 +472,126 @@ def nanargmin(values, axis=None, skipna=True):
     return result
 
 
-@disallow('M8','m8')
+@disallow('M8', 'm8')
 def nanskew(values, axis=None, skipna=True):
+    """ Compute the sample skewness.
+
+    The statistic computed here is the adjusted Fisher-Pearson standardized
+    moment coefficient G1. The algorithm computes this coefficient directly
+    from the second and third central moment.
+
+    """
 
     mask = isnull(values)
-    if not _is_floating_dtype(values):
+    if not is_float_dtype(values.dtype):
         values = values.astype('f8')
-
-    count = _get_counts(mask, axis)
+        count = _get_counts(mask, axis)
+    else:
+        count = _get_counts(mask, axis, dtype=values.dtype)
 
     if skipna:
         values = values.copy()
         np.putmask(values, mask, 0)
 
-    A = values.sum(axis) / count
-    B = (values ** 2).sum(axis) / count - A ** 2
-    C = (values ** 3).sum(axis) / count - A ** 3 - 3 * A * B
+    mean = values.sum(axis, dtype=np.float64) / count
+    if axis is not None:
+        mean = np.expand_dims(mean, axis)
+
+    adjusted = values - mean
+    if skipna:
+        np.putmask(adjusted, mask, 0)
+    adjusted2 = adjusted ** 2
+    adjusted3 = adjusted2 * adjusted
+    m2 = adjusted2.sum(axis, dtype=np.float64)
+    m3 = adjusted3.sum(axis, dtype=np.float64)
 
     # floating point error
-    B = _zero_out_fperr(B)
-    C = _zero_out_fperr(C)
+    m2 = _zero_out_fperr(m2)
+    m3 = _zero_out_fperr(m3)
 
-    result = ((np.sqrt((count ** 2 - count)) * C) /
-              ((count - 2) * np.sqrt(B) ** 3))
+    result = (count * (count - 1) ** 0.5 / (count - 2)) * (m3 / m2 ** 1.5)
+
+    dtype = values.dtype
+    if is_float_dtype(dtype):
+        result = result.astype(dtype)
 
     if isinstance(result, np.ndarray):
-        result = np.where(B == 0, 0, result)
+        result = np.where(m2 == 0, 0, result)
         result[count < 3] = np.nan
         return result
     else:
-        result = 0 if B == 0 else result
+        result = 0 if m2 == 0 else result
         if count < 3:
             return np.nan
         return result
 
 
-@disallow('M8','m8')
+@disallow('M8', 'm8')
 def nankurt(values, axis=None, skipna=True):
+    """ Compute the sample skewness.
 
+    The statistic computed here is the adjusted Fisher-Pearson standardized
+    moment coefficient G2, computed directly from the second and fourth
+    central moment.
+
+    """
     mask = isnull(values)
-    if not _is_floating_dtype(values):
+    if not is_float_dtype(values.dtype):
         values = values.astype('f8')
-
-    count = _get_counts(mask, axis)
+        count = _get_counts(mask, axis)
+    else:
+        count = _get_counts(mask, axis, dtype=values.dtype)
 
     if skipna:
         values = values.copy()
         np.putmask(values, mask, 0)
 
-    A = values.sum(axis) / count
-    B = (values ** 2).sum(axis) / count - A ** 2
-    C = (values ** 3).sum(axis) / count - A ** 3 - 3 * A * B
-    D = (values ** 4).sum(axis) / count - A ** 4 - 6 * B * A * A - 4 * C * A
+    mean = values.sum(axis, dtype=np.float64) / count
+    if axis is not None:
+        mean = np.expand_dims(mean, axis)
 
-    B = _zero_out_fperr(B)
-    C = _zero_out_fperr(C)
-    D = _zero_out_fperr(D)
+    adjusted = values - mean
+    if skipna:
+        np.putmask(adjusted, mask, 0)
+    adjusted2 = adjusted ** 2
+    adjusted4 = adjusted2 ** 2
+    m2 = adjusted2.sum(axis, dtype=np.float64)
+    m4 = adjusted4.sum(axis, dtype=np.float64)
 
-    result = (((count * count - 1.) * D / (B * B) - 3 * ((count - 1.) ** 2)) /
-              ((count - 2.) * (count - 3.)))
-    if isinstance(result, np.ndarray):
-        result = np.where(B == 0, 0, result)
-        result[count < 4] = np.nan
-        return result
-    else:
-        result = 0 if B == 0 else result
+    adj = 3 * (count - 1) ** 2 / ((count - 2) * (count - 3))
+    numer = count * (count + 1) * (count - 1) * m4
+    denom = (count - 2) * (count - 3) * m2**2
+    result = numer / denom - adj
+
+    # floating point error
+    numer = _zero_out_fperr(numer)
+    denom = _zero_out_fperr(denom)
+
+    if not isinstance(denom, np.ndarray):
+        # if ``denom`` is a scalar, check these corner cases first before
+        # doing division
         if count < 4:
             return np.nan
-        return result
+        if denom == 0:
+            return 0
+
+    result = numer / denom - adj
+
+    dtype = values.dtype
+    if is_float_dtype(dtype):
+        result = result.astype(dtype)
+
+    if isinstance(result, np.ndarray):
+        result = np.where(denom == 0, 0, result)
+        result[count < 4] = np.nan
+
+    return result
 
 
-@disallow('M8','m8')
+@disallow('M8', 'm8')
 def nanprod(values, axis=None, skipna=True):
     mask = isnull(values)
-    if skipna and not _is_any_int_dtype(values):
+    if skipna and not is_any_int_dtype(values):
         values = values.copy()
         values[mask] = 1
     result = values.prod(axis)
@@ -556,15 +617,18 @@ def _maybe_arg_null_out(result, axis, mask, skipna):
     return result
 
 
-def _get_counts(mask, axis):
+def _get_counts(mask, axis, dtype=float):
+    dtype = _get_dtype(dtype)
     if axis is None:
-        return float(mask.size - mask.sum())
+        return dtype.type(mask.size - mask.sum())
 
     count = mask.shape[axis] - mask.sum(axis)
+    if lib.isscalar(count):
+        return dtype.type(count)
     try:
-        return count.astype(float)
+        return count.astype(dtype)
     except AttributeError:
-        return np.array(count, dtype=float)
+        return np.array(count, dtype=dtype)
 
 
 def _maybe_null_out(result, axis, mask):
@@ -576,7 +640,7 @@ def _maybe_null_out(result, axis, mask):
             else:
                 result = result.astype('f8')
             result[null_mask] = np.nan
-    else:
+    elif result is not tslib.NaT:
         null_mask = mask.size - mask.sum()
         if null_mask == 0:
             result = np.nan
@@ -588,10 +652,10 @@ def _zero_out_fperr(arg):
     if isinstance(arg, np.ndarray):
         return np.where(np.abs(arg) < 1e-14, 0, arg)
     else:
-        return 0 if np.abs(arg) < 1e-14 else arg
+        return arg.dtype.type(0) if np.abs(arg) < 1e-14 else arg
 
 
-@disallow('M8','m8')
+@disallow('M8', 'm8')
 def nancorr(a, b, method='pearson', min_periods=None):
     """
     a, b: ndarrays
@@ -638,7 +702,7 @@ def get_corr_func(method):
     return _cor_methods[method]
 
 
-@disallow('M8','m8')
+@disallow('M8', 'm8')
 def nancov(a, b, min_periods=None):
     if len(a) != len(b):
         raise AssertionError('Operands to nancov must have same size')
@@ -681,8 +745,6 @@ def _ensure_numeric(x):
 
 # NA-friendly array comparisons
 
-import operator
-
 
 def make_nancomp(op):
     def f(x, y):
@@ -698,7 +760,9 @@ def make_nancomp(op):
             np.putmask(result, mask, np.nan)
 
         return result
+
     return f
+
 
 nangt = make_nancomp(operator.gt)
 nange = make_nancomp(operator.ge)

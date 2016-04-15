@@ -1,7 +1,8 @@
-from pandas.compat import StringIO, callable
-from pandas.lib import cache_readonly
+from pandas.compat import StringIO, callable, signature
+from pandas.lib import cache_readonly  # noqa
 import sys
 import warnings
+from textwrap import dedent
 from functools import wraps
 
 
@@ -10,12 +11,12 @@ def deprecate(name, alternative, alt_name=None):
 
     def wrapper(*args, **kwargs):
         warnings.warn("%s is deprecated. Use %s instead" % (name, alt_name),
-                      FutureWarning)
+                      FutureWarning, stacklevel=2)
         return alternative(*args, **kwargs)
     return wrapper
 
 
-def deprecate_kwarg(old_arg_name, new_arg_name, mapping=None):
+def deprecate_kwarg(old_arg_name, new_arg_name, mapping=None, stacklevel=2):
     """Decorator to deprecate a keyword argument of a function
 
     Parameters
@@ -26,7 +27,7 @@ def deprecate_kwarg(old_arg_name, new_arg_name, mapping=None):
         Name of prefered argument in function
     mapping : dict or callable
         If mapping is present, use it to translate old arguments to
-        new arguments.  A callable must do its own value checking;
+        new arguments. A callable must do its own value checking;
         values not found in a dict will be forwarded unchanged.
 
     Examples
@@ -43,9 +44,9 @@ def deprecate_kwarg(old_arg_name, new_arg_name, mapping=None):
     FutureWarning: cols is deprecated, use columns instead
       warnings.warn(msg, FutureWarning)
     should raise warning
-    >>> f(cols='should error', columns="can't pass do both")
+    >>> f(cols='should error', columns="can\'t pass do both")
     TypeError: Can only specify 'cols' or 'columns', not both
-    >>> @deprecate_kwarg('old', 'new', {'yes': True, 'no', False})
+    >>> @deprecate_kwarg('old', 'new', {'yes': True, 'no': False})
     ... def f(new=False):
     ...     print('yes!' if new else 'no!')
     ...
@@ -59,6 +60,7 @@ def deprecate_kwarg(old_arg_name, new_arg_name, mapping=None):
             not callable(mapping):
         raise TypeError("mapping from old to new argument values "
                         "must be dict or callable!")
+
     def _deprecate_kwarg(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -78,10 +80,11 @@ def deprecate_kwarg(old_arg_name, new_arg_name, mapping=None):
                     new_arg_value = old_arg_value
                     msg = "the '%s' keyword is deprecated, " \
                           "use '%s' instead" % (old_arg_name, new_arg_name)
-                warnings.warn(msg, FutureWarning)
+
+                warnings.warn(msg, FutureWarning, stacklevel=stacklevel)
                 if kwargs.get(new_arg_name, None) is not None:
-                    msg = "Can only specify '%s' or '%s', not both" % \
-                      (old_arg_name, new_arg_name)
+                    msg = ("Can only specify '%s' or '%s', not both" %
+                           (old_arg_name, new_arg_name))
                     raise TypeError(msg)
                 else:
                     kwargs[new_arg_name] = new_arg_value
@@ -124,7 +127,7 @@ class Substitution(object):
     """
     def __init__(self, *args, **kwargs):
         if (args and kwargs):
-            raise AssertionError( "Only positional or keyword args are allowed")
+            raise AssertionError("Only positional or keyword args are allowed")
 
         self.params = args or kwargs
 
@@ -179,7 +182,7 @@ class Appender(object):
         func.__doc__ = func.__doc__ if func.__doc__ else ''
         self.addendum = self.addendum if self.addendum else ''
         docitems = [func.__doc__, self.addendum]
-        func.__doc__ = self.join.join(docitems)
+        func.__doc__ = dedent(self.join.join(docitems))
         return func
 
 
@@ -259,7 +262,8 @@ def knownfailureif(fail_condition, msg=None):
 
     return knownfail_decorator
 
-def make_signature(func) :
+
+def make_signature(func):
     """
     Returns a string repr of the arg list of a func call, with any defaults
 
@@ -271,20 +275,18 @@ def make_signature(func) :
     >>> print(_make_signature(f))
     a,b,c=2
     """
-    from inspect import getargspec
-    spec = getargspec(func)
-    if spec.defaults == None :
+    spec = signature(func)
+    if spec.defaults is None:
         n_wo_defaults = len(spec.args)
         defaults = ('',) * n_wo_defaults
-    else :
+    else:
         n_wo_defaults = len(spec.args) - len(spec.defaults)
         defaults = ('',) * n_wo_defaults + spec.defaults
     args = []
-    for i, (var, default) in enumerate(zip(spec.args, defaults)) :
-        args.append(var if default=='' else var+'='+repr(default))
+    for i, (var, default) in enumerate(zip(spec.args, defaults)):
+        args.append(var if default == '' else var + '=' + repr(default))
     if spec.varargs:
         args.append('*' + spec.varargs)
     if spec.keywords:
         args.append('**' + spec.keywords)
     return args, spec.args
-

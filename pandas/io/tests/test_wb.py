@@ -1,3 +1,5 @@
+# flake8: noqa
+
 import nose
 
 import pandas
@@ -5,9 +7,11 @@ from pandas.compat import u
 from pandas.util.testing import network
 from pandas.util.testing import assert_frame_equal
 from numpy.testing.decorators import slow
-from pandas.io.wb import search, download, get_countries
 import pandas.util.testing as tm
 
+# deprecated
+with tm.assert_produces_warning(FutureWarning, check_stacklevel=False):
+    from pandas.io.wb import search, download, get_countries
 
 class TestWB(tm.TestCase):
 

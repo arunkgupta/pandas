@@ -25,6 +25,24 @@
 Remote Data Access
 ******************
 
+.. _remote_data.pandas_datareader:
+
+.. warning::
+
+   In pandas 0.17.0, the sub-package ``pandas.io.data`` will be removed in favor of a separately installable `pandas-datareader package <https://github.com/pydata/pandas-datareader>`_. This will allow the data modules to be independently updated to your pandas installation. The API for ``pandas-datareader v0.1.1`` is the same as in ``pandas v0.16.1``. (:issue:`8961`)
+
+   You should replace the imports of the following:
+
+   .. code-block:: python
+
+      from pandas.io import data, wb
+
+   With:
+
+   .. code-block:: python
+
+      from pandas_datareader import data, wb
+
 .. _remote_data.data_reader:
 
 Functions from :mod:`pandas.io.data` and :mod:`pandas.io.ga` extract data from various Internet sources into a DataFrame. Currently the following sources are supported:
@@ -44,12 +62,13 @@ Yahoo! Finance
 --------------
 
 .. ipython:: python
+   :okwarning:
 
     import pandas.io.data as web
     import datetime
     start = datetime.datetime(2010, 1, 1)
     end = datetime.datetime(2013, 1, 27)
-    f=web.DataReader("F", 'yahoo', start, end)
+    f = web.DataReader("F", 'yahoo', start, end)
     f.ix['2010-01-04']
 
 .. _remote_data.yahoo_options:
@@ -58,10 +77,10 @@ Yahoo! Finance Options
 ----------------------
 ***Experimental***
 
-The Options class allows the download of options data from Yahoo! Finance.
+The ``Options`` class allows the download of options data from Yahoo! Finance.
 
 The ``get_all_data`` method downloads and caches option data for all expiry months
-and provides a formatted ``DataFrame`` with a hierarchical index, so its easy to get
+and provides a formatted ``DataFrame`` with a hierarchical index, so it is easy to get
 to the specific option you want.
 
 .. ipython:: python
@@ -71,10 +90,10 @@ to the specific option you want.
       data = aapl.get_all_data()
       data.iloc[0:5, 0:5]
 
-      #Show the $100 strike puts at all expiry dates:
+      # Show the $100 strike puts at all expiry dates:
       data.loc[(100, slice(None), 'put'),:].iloc[0:5, 0:5]
 
-      #Show the volume traded of $100 strike puts at all expiry dates:
+      # Show the volume traded of $100 strike puts at all expiry dates:
       data.loc[(100, slice(None), 'put'),'Vol'].head()
 
 If you don't want to download all the data, more specific requests can be made.
@@ -121,7 +140,7 @@ Google Finance
     import datetime
     start = datetime.datetime(2010, 1, 1)
     end = datetime.datetime(2013, 1, 27)
-    f=web.DataReader("F", 'google', start, end)
+    f = web.DataReader("F", 'google', start, end)
     f.ix['2010-01-04']
 
 .. _remote_data.fred:
@@ -152,7 +171,7 @@ Dataset names are listed at `Fama/French Data Library
 .. ipython:: python
 
     import pandas.io.data as web
-    ip=web.DataReader("5_Industry_Portfolios", "famafrench")
+    ip = web.DataReader("5_Industry_Portfolios", "famafrench")
     ip[4].ix[192607]
 
 .. _remote_data.wb:
@@ -168,12 +187,12 @@ Indicators
 ~~~~~~~~~~
 
 Either from exploring the World Bank site, or using the search function included,
-every world bank indicator is accessible.  
+every world bank indicator is accessible.
 
 For example, if you wanted to compare the Gross Domestic Products per capita in
 constant dollars in North America, you would use the ``search`` function:
 
-.. code-block:: python
+.. code-block:: ipython
 
     In [1]: from pandas.io import wb
 
@@ -188,7 +207,7 @@ constant dollars in North America, you would use the ``search`` function:
 Then you would use the ``download`` function to acquire the data from the World
 Bank's servers:
 
-.. code-block:: python
+.. code-block:: ipython
 
     In [3]: dat = wb.download(indicator='NY.GDP.PCAP.KD', country=['US', 'CA', 'MX'], start=2005, end=2008)
 
@@ -211,7 +230,7 @@ Bank's servers:
 The resulting dataset is a properly formatted ``DataFrame`` with a hierarchical
 index, so it is easy to apply ``.groupby`` transformations to it:
 
-.. code-block:: python
+.. code-block:: ipython
 
     In [6]: dat['NY.GDP.PCAP.KD'].groupby(level=0).mean()
     Out[6]:
@@ -224,7 +243,7 @@ index, so it is easy to apply ``.groupby`` transformations to it:
 Now imagine you want to compare GDP to the share of people with cellphone
 contracts around the world.
 
-.. code-block:: python
+.. code-block:: ipython
 
     In [7]: wb.search('cell.*%').iloc[:,:2]
     Out[7]:
@@ -236,7 +255,7 @@ contracts around the world.
 Notice that this second search was much faster than the first one because
 ``pandas`` now has a cached list of available data series.
 
-.. code-block:: python
+.. code-block:: ipython
 
     In [13]: ind = ['NY.GDP.PCAP.KD', 'IT.MOB.COV.ZS']
     In [14]: dat = wb.download(indicator=ind, country='all', start=2011, end=2011).dropna()
@@ -254,7 +273,7 @@ Finally, we use the ``statsmodels`` package to assess the relationship between
 our two variables using ordinary least squares regression. Unsurprisingly,
 populations in rich countries tend to use cellphones at a higher rate:
 
-.. code-block:: python
+.. code-block:: ipython
 
     In [17]: import numpy as np
     In [18]: import statsmodels.formula.api as smf
@@ -287,7 +306,7 @@ Country Codes
 
 .. versionadded:: 0.15.1
 
-The ``country`` argument accepts a string or list of mixed 
+The ``country`` argument accepts a string or list of mixed
 `two <http://en.wikipedia.org/wiki/ISO_3166-1_alpha-2>`__ or `three <http://en.wikipedia.org/wiki/ISO_3166-1_alpha-3>`__ character
 ISO country codes, as well as dynamic `World Bank exceptions <http://data.worldbank.org/node/18>`__ to the ISO standards.
 
@@ -298,13 +317,12 @@ Problematic Country Codes & Indicators
 
 .. note::
 
-   The World Bank's country list and indicators are dynamic. As of 0.15.1, 
+   The World Bank's country list and indicators are dynamic. As of 0.15.1,
    :func:`wb.download()` is more flexible.  To achieve this, the warning
    and exception logic changed.
-   
-The world bank converts some country codes,
-in their response, which makes error checking by pandas difficult.
-Retired indicators still persist in the search.
+
+The world bank converts some country codes in their response, which makes error
+checking by pandas difficult. Retired indicators still persist in the search.
 
 Given the new flexibility of 0.15.1, improved error handling by the user
 may be necessary for fringe cases.
@@ -321,12 +339,12 @@ There are at least 4 kinds of country codes:
 There are at least 3 kinds of indicators:
 
 1. Current - Returns data.
-2. Retired - Appears in search results, yet won't return data. 
+2. Retired - Appears in search results, yet won't return data.
 3. Bad - Will not return data.
 
 Use the ``errors`` argument to control warnings and exceptions.  Setting
 errors to ignore or warn, won't stop failed responses.  (ie, 100% bad
-indicators, or a single "bad" (#4 above) country code).  
+indicators, or a single "bad" (#4 above) country code).
 
 See docstrings for more info.
 
@@ -355,7 +373,7 @@ The first thing you need to do is to setup accesses to Google Analytics API. Fol
     #. rename it to ``client_secrets.json``
     #. move it to the ``pandas/io`` module directory
 
-The first time you use the :func:`read_ga` funtion, a browser window will open to ask you to authentify to the Google API. Do proceed.
+The first time you use the :func:`read_ga` function, a browser window will open to ask you to authentify to the Google API. Do proceed.
 
 Using the Google Analytics API
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -377,15 +395,14 @@ The following will fetch users and pageviews (metrics) data per day of the week,
         filters     = "pagePath=~aboutus;ga:country==France",
     )
 
-The only mandatory arguments are ``metrics,`` ``dimensions`` and ``start_date``. We can only strongly recommend you to always specify the ``account_id``, ``profile_id`` and ``property_id`` to avoid accessing the wrong data bucket in Google Analytics.
+The only mandatory arguments are ``metrics,`` ``dimensions`` and ``start_date``. We strongly recommend that you always specify the ``account_id``, ``profile_id`` and ``property_id`` to avoid accessing the wrong data bucket in Google Analytics.
 
 The ``index_col`` argument indicates which dimension(s) has to be taken as index.
 
-The ``filters`` argument indicates the filtering to apply to the query. In the above example, the page has URL has to contain ``aboutus`` AND the visitors country has to be France.
+The ``filters`` argument indicates the filtering to apply to the query. In the above example, the page URL has to contain ``aboutus`` AND the visitors country has to be France.
 
-Detailed informations in the followings:
+Detailed information in the following:
 
 * `pandas & google analytics, by yhat <http://blog.yhathq.com/posts/pandas-google-analytics.html>`__
 * `Google Analytics integration in pandas, by Chang She <http://quantabee.wordpress.com/2012/12/17/google-analytics-pandas/>`__
 * `Google Analytics Dimensions and Metrics Reference <https://developers.google.com/analytics/devguides/reporting/core/dimsmets>`_
-

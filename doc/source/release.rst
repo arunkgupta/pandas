@@ -5,22 +5,14 @@
 .. ipython:: python
    :suppress:
 
-   import os
-   import csv
-   from pandas.compat import StringIO
    import pandas as pd
-   ExcelWriter = pd.ExcelWriter
-
    import numpy as np
    np.random.seed(123456)
-   randn = np.random.randn
    np.set_printoptions(precision=4, suppress=True)
-
    import matplotlib.pyplot as plt
    plt.close('all')
 
-   from pandas import *
-   options.display.max_rows=15
+   pd.options.display.max_rows=15
    import pandas.util.testing as tm
 
 *************
@@ -45,21 +37,600 @@ analysis / manipulation tool available in any language.
 * Binary installers on PyPI: http://pypi.python.org/pypi/pandas
 * Documentation: http://pandas.pydata.org
 
+pandas 0.18.1
+-------------
+
+**Release date:** (April ??, 2016)
+
+This is a minor release from 0.18.0 and includes a large number of bug fixes
+along with several new features, enhancements, and performance improvements.
+
+Highlights include:
+
+See the :ref:`v0.18.1 Whatsnew <whatsnew_0181>` overview for an extensive list
+of all enhancements and bugs that have been fixed in 0.18.1.
+
+Thanks
+~~~~~~
+
+pandas 0.18.0
+-------------
+
+**Release date:** (March 13, 2016)
+
+This is a major release from 0.17.1 and includes a small number of API changes, several new features,
+enhancements, and performance improvements along with a large number of bug fixes. We recommend that all
+users upgrade to this version.
+
+Highlights include:
+
+- Moving and expanding window functions are now methods on Series and DataFrame,
+  similar to ``.groupby``, see :ref:`here <whatsnew_0180.enhancements.moments>`.
+- Adding support for a ``RangeIndex`` as a specialized form of the ``Int64Index``
+  for memory savings, see :ref:`here <whatsnew_0180.enhancements.rangeindex>`.
+- API breaking change to the ``.resample`` method to make it more ``.groupby``
+  like, see :ref:`here <whatsnew_0180.breaking.resample>`.
+- Removal of support for positional indexing with floats, which was deprecated
+  since 0.14.0. This will now raise a ``TypeError``, see :ref:`here <whatsnew_0180.float_indexers>`.
+- The ``.to_xarray()`` function has been added for compatibility with the
+  `xarray package <http://xarray.pydata.org/en/stable/>`__, see :ref:`here <whatsnew_0180.enhancements.xarray>`.
+- The ``read_sas`` function has been enhanced to read ``sas7bdat`` files, see :ref:`here <whatsnew_0180.enhancements.sas>`.
+- Addition of the :ref:`.str.extractall() method <whatsnew_0180.enhancements.extract>`,
+  and API changes to the :ref:`.str.extract() method <whatsnew_0180.enhancements.extract>`
+  and :ref:`.str.cat() method <whatsnew_0180.enhancements.strcat>`.
+- ``pd.test()`` top-level nose test runner is available (:issue:`4327`).
+
+See the :ref:`v0.18.0 Whatsnew <whatsnew_0180>` overview for an extensive list
+of all enhancements and bugs that have been fixed in 0.17.1.
+
+Thanks
+~~~~~~
+
+- ARF
+- Alex Alekseyev
+- Andrew McPherson
+- Andrew Rosenfeld
+- Anthonios Partheniou
+- Anton I. Sipos
+- Ben
+- Ben North
+- Bran Yang
+- Chris
+- Chris Carroux
+- Christopher C. Aycock
+- Christopher Scanlin
+- Cody
+- Da Wang
+- Daniel Grady
+- Dorozhko Anton
+- Dr-Irv
+- Erik M. Bray
+- Evan Wright
+- Francis T. O'Donovan
+- Frank Cleary
+- Gianluca Rossi
+- Graham Jeffries
+- Guillaume Horel
+- Henry Hammond
+- Isaac Schwabacher
+- Jean-Mathieu Deschenes
+- Jeff Reback
+- Joe Jevnik
+- John Freeman
+- John Fremlin
+- Jonas Hoersch
+- Joris Van den Bossche
+- Joris Vankerschaver
+- Justin Lecher
+- Justin Lin
+- Ka Wo Chen
+- Keming Zhang
+- Kerby Shedden
+- Kyle
+- Marco Farrugia
+- MasonGallo
+- MattRijk
+- Matthew Lurie
+- Maximilian Roos
+- Mayank Asthana
+- Mortada Mehyar
+- Moussa Taifi
+- Navreet Gill
+- Nicolas Bonnotte
+- Paul Reiners
+- Philip Gura
+- Pietro Battiston
+- RahulHP
+- Randy Carnevale
+- Rinoc Johnson
+- Rishipuri
+- Sangmin Park
+- Scott E Lasley
+- Sereger13
+- Shannon Wang
+- Skipper Seabold
+- Thierry Moisan
+- Thomas A Caswell
+- Toby Dylan Hocking
+- Tom Augspurger
+- Travis
+- Trent Hauck
+- Tux1
+- Varun
+- Wes McKinney
+- Will Thompson
+- Yoav Ram
+- Yoong Kang Lim
+- Yoshiki Vázquez Baeza
+- Young Joong Kim
+- Younggun Kim
+- Yuval Langer
+- alex argunov
+- behzad nouri
+- boombard
+- brian-pantano
+- chromy
+- daniel
+- dgram0
+- gfyoung
+- hack-c
+- hcontrast
+- jfoo
+- kaustuv deolal
+- llllllllll
+- ranarag
+- rockg
+- scls19fr
+- seales
+- sinhrks
+- srib
+- surveymedia.ca
+- tworec
+
+pandas 0.17.1
+-------------
+
+**Release date:** (November 21, 2015)
+
+This is a minor release from 0.17.0 and includes a large number of bug fixes
+along with several new features, enhancements, and performance improvements.
+
+Highlights include:
+
+- Support for Conditional HTML Formatting, see :ref:`here <whatsnew_0171.style>`
+- Releasing the GIL on the csv reader & other ops, see :ref:`here <whatsnew_0171.performance>`
+- Regression in ``DataFrame.drop_duplicates`` from 0.16.2, causing incorrect results on integer values (:issue:`11376`)
+
+See the :ref:`v0.17.1 Whatsnew <whatsnew_0171>` overview for an extensive list
+of all enhancements and bugs that have been fixed in 0.17.1.
+
+Thanks
+~~~~~~
+
+- Aleksandr Drozd
+- Alex Chase
+- Anthonios Partheniou
+- BrenBarn
+- Brian J. McGuirk
+- Chris
+- Christian Berendt
+- Christian Perez
+- Cody Piersall
+- Data & Code Expert Experimenting with Code on Data
+- DrIrv
+- Evan Wright
+- Guillaume Gay
+- Hamed Saljooghinejad
+- Iblis Lin
+- Jake VanderPlas
+- Jan Schulz
+- Jean-Mathieu Deschenes
+- Jeff Reback
+- Jimmy Callin
+- Joris Van den Bossche
+- K.-Michael Aye
+- Ka Wo Chen
+- Loïc Séguin-C
+- Luo Yicheng
+- Magnus Jöud
+- Manuel Leonhardt
+- Matthew Gilbert
+- Maximilian Roos
+- Michael
+- Nicholas Stahl
+- Nicolas Bonnotte
+- Pastafarianist
+- Petra Chong
+- Phil Schaf
+- Philipp A
+- Rob deCarvalho
+- Roman Khomenko
+- Rémy Léone
+- Sebastian Bank
+- Thierry Moisan
+- Tom Augspurger
+- Tux1
+- Varun
+- Wieland Hoffmann
+- Winterflower
+- Yoav Ram
+- Younggun Kim
+- Zeke
+- ajcr
+- azuranski
+- behzad nouri
+- cel4
+- emilydolson
+- hironow
+- lexual
+- llllllllll
+- rockg
+- silentquasar
+- sinhrks
+- taeold
+
+pandas 0.17.0
+-------------
+
+**Release date:** (October 9, 2015)
+
+This is a major release from 0.16.2 and includes a small number of API changes, several new features,
+enhancements, and performance improvements along with a large number of bug fixes. We recommend that all
+users upgrade to this version.
+
+Highlights include:
+
+- Release the Global Interpreter Lock (GIL) on some cython operations, see :ref:`here <whatsnew_0170.gil>`
+- Plotting methods are now available as attributes of the ``.plot`` accessor, see :ref:`here <whatsnew_0170.plot>`
+- The sorting API has been revamped to remove some long-time inconsistencies, see :ref:`here <whatsnew_0170.api_breaking.sorting>`
+- Support for a ``datetime64[ns]`` with timezones as a first-class dtype, see :ref:`here <whatsnew_0170.tz>`
+- The default for ``to_datetime`` will now be to ``raise`` when presented with unparseable formats,
+  previously this would return the original input. Also, date parse
+  functions now return consistent results. See :ref:`here <whatsnew_0170.api_breaking.to_datetime>`
+- The default for ``dropna`` in ``HDFStore`` has changed to ``False``, to store by default all rows even
+  if they are all ``NaN``, see :ref:`here <whatsnew_0170.api_breaking.hdf_dropna>`
+- Datetime accessor (``dt``) now supports ``Series.dt.strftime`` to generate formatted strings for datetime-likes, and ``Series.dt.total_seconds`` to generate each duration of the timedelta in seconds. See :ref:`here <whatsnew_0170.strftime>`
+- ``Period`` and ``PeriodIndex`` can handle multiplied freq like ``3D``, which corresponding to 3 days span. See :ref:`here <whatsnew_0170.periodfreq>`
+- Development installed versions of pandas will now have ``PEP440`` compliant version strings (:issue:`9518`)
+- Development support for benchmarking with the `Air Speed Velocity library <https://github.com/spacetelescope/asv/>`_ (:issue:`8316`)
+- Support for reading SAS xport files, see :ref:`here <whatsnew_0170.enhancements.sas_xport>`
+- Documentation comparing SAS to *pandas*, see :ref:`here <compare_with_sas>`
+- Removal of the automatic TimeSeries broadcasting, deprecated since 0.8.0, see :ref:`here <whatsnew_0170.prior_deprecations>`
+- Display format with plain text can optionally align with Unicode East Asian Width, see :ref:`here <whatsnew_0170.east_asian_width>`
+- Compatibility with Python 3.5 (:issue:`11097`)
+- Compatibility with matplotlib 1.5.0 (:issue:`11111`)
+
+See the :ref:`v0.17.0 Whatsnew <whatsnew_0170>` overview for an extensive list
+of all enhancements and bugs that have been fixed in 0.17.0.
+
+Thanks
+~~~~~~
+
+- Alex Rothberg
+- Andrea Bedini
+- Andrew Rosenfeld
+- Andy Li
+- Anthonios Partheniou
+- Artemy Kolchinsky
+- Bernard Willers
+- Charlie Clark
+- Chris
+- Chris Whelan
+- Christoph Gohlke
+- Christopher Whelan
+- Clark Fitzgerald
+- Clearfield Christopher
+- Dan Ringwalt
+- Daniel Ni
+- Data & Code Expert Experimenting with Code on Data
+- David Cottrell
+- David John Gagne
+- David Kelly
+- ETF
+- Eduardo Schettino
+- Egor
+- Egor Panfilov
+- Evan Wright
+- Frank Pinter
+- Gabriel Araujo
+- Garrett-R
+- Gianluca Rossi
+- Guillaume Gay
+- Guillaume Poulin
+- Harsh Nisar
+- Ian Henriksen
+- Ian Hoegen
+- Jaidev Deshpande
+- Jan Rudolph
+- Jan Schulz
+- Jason Swails
+- Jeff Reback
+- Jonas Buyl
+- Joris Van den Bossche
+- Joris Vankerschaver
+- Josh Levy-Kramer
+- Julien Danjou
+- Ka Wo Chen
+- Karrie Kehoe
+- Kelsey Jordahl
+- Kerby Shedden
+- Kevin Sheppard
+- Lars Buitinck
+- Leif Johnson
+- Luis Ortiz
+- Mac
+- Matt Gambogi
+- Matt Savoie
+- Matthew Gilbert
+- Maximilian Roos
+- Michelangelo D'Agostino
+- Mortada Mehyar
+- Nick Eubank
+- Nipun Batra
+- Ondřej Čertík
+- Phillip Cloud
+- Pratap Vardhan
+- Rafal Skolasinski
+- Richard Lewis
+- Rinoc Johnson
+- Rob Levy
+- Robert Gieseke
+- Safia Abdalla
+- Samuel Denny
+- Saumitra Shahapure
+- Sebastian Pölsterl
+- Sebastian Rubbert
+- Sheppard, Kevin
+- Sinhrks
+- Siu Kwan Lam
+- Skipper Seabold
+- Spencer Carrucciu
+- Stephan Hoyer
+- Stephen Hoover
+- Stephen Pascoe
+- Terry Santegoeds
+- Thomas Grainger
+- Tjerk Santegoeds
+- Tom Augspurger
+- Vincent Davis
+- Winterflower
+- Yaroslav Halchenko
+- Yuan Tang (Terry)
+- agijsberts
+- ajcr
+- behzad nouri
+- cel4
+- cyrusmaher
+- davidovitch
+- ganego
+- jreback
+- juricast
+- larvian
+- maximilianr
+- msund
+- rekcahpassyla
+- robertzk
+- scls19fr
+- seth-p
+- sinhrks
+- springcoil
+- terrytangyuan
+- tzinckgraf
+
+pandas 0.16.2
+-------------
+
+**Release date:** (June 12, 2015)
+
+This is a minor release from 0.16.1 and includes a large number of bug fixes
+along with several new features, enhancements, and performance improvements.
+
+Highlights include:
+
+- A new ``pipe`` method, see :ref:`here <whatsnew_0162.enhancements.pipe>`
+- Documentation on how to use `numba <http://numba.pydata.org>`_ with *pandas*, see :ref:`here <enhancingperf.numba>`
+
+See the :ref:`v0.16.2 Whatsnew <whatsnew_0162>` overview for an extensive list
+of all enhancements and bugs that have been fixed in 0.16.2.
+
+Thanks
+~~~~~~
+
+- Andrew Rosenfeld
+- Artemy Kolchinsky
+- Bernard Willers
+- Christer van der Meeren
+- Christian Hudon
+- Constantine Glen Evans
+- Daniel Julius Lasiman
+- Evan Wright
+- Francesco Brundu
+- Gaëtan de Menten
+- Jake VanderPlas
+- James Hiebert
+- Jeff Reback
+- Joris Van den Bossche
+- Justin Lecher
+- Ka Wo Chen
+- Kevin Sheppard
+- Mortada Mehyar
+- Morton Fox
+- Robin Wilson
+- Thomas Grainger
+- Tom Ajamian
+- Tom Augspurger
+- Yoshiki Vázquez Baeza
+- Younggun Kim
+- austinc
+- behzad nouri
+- jreback
+- lexual
+- rekcahpassyla
+- scls19fr
+- sinhrks
+
+pandas 0.16.1
+-------------
+
+**Release date:** (May 11, 2015)
+
+This is a minor release from 0.16.0 and includes a large number of bug fixes
+along with several new features, enhancements, and performance improvements.
+A small number of API changes were necessary to fix existing bugs.
+
+See the :ref:`v0.16.1 Whatsnew <whatsnew_0161>` overview for an extensive list
+of all API changes, enhancements and bugs that have been fixed in 0.16.1.
+
+Thanks
+~~~~~~
+
+- Alfonso MHC
+- Andy Hayden
+- Artemy Kolchinsky
+- Chris Gilmer
+- Chris Grinolds
+- Dan Birken
+- David BROCHART
+- David Hirschfeld
+- David Stephens
+- Dr. Leo
+- Evan Wright
+- Frans van Dunné
+- Hatem Nassrat
+- Henning Sperr
+- Hugo Herter
+- Jan Schulz
+- Jeff Blackburne
+- Jeff Reback
+- Jim Crist
+- Jonas Abernot
+- Joris Van den Bossche
+- Kerby Shedden
+- Leo Razoumov
+- Manuel Riel
+- Mortada Mehyar
+- Nick Burns
+- Nick Eubank
+- Olivier Grisel
+- Phillip Cloud
+- Pietro Battiston
+- Roy Hyunjin Han
+- Sam Zhang
+- Scott Sanderson
+- Stephan Hoyer
+- Tiago Antao
+- Tom Ajamian
+- Tom Augspurger
+- Tomaz Berisa
+- Vikram Shirgur
+- Vladimir Filimonov
+- William Hogman
+- Yasin A
+- Younggun Kim
+- behzad nouri
+- dsm054
+- floydsoft
+- flying-sheep
+- gfr
+- jnmclarty
+- jreback
+- ksanghai
+- lucas
+- mschmohl
+- ptype
+- rockg
+- scls19fr
+- sinhrks
+
+
 pandas 0.16.0
 -------------
 
-**Release date:** (February ??, 2015)
+**Release date:** (March 22, 2015)
 
 This is a major release from 0.15.2 and includes a number of API changes, several new features, enhancements, and
 performance improvements along with a large number of bug fixes.
 
 Highlights include:
 
+- ``DataFrame.assign`` method, see :ref:`here <whatsnew_0160.enhancements.assign>`
+- ``Series.to_coo/from_coo`` methods to interact with ``scipy.sparse``, see :ref:`here <whatsnew_0160.enhancements.sparse>`
+- Backwards incompatible change to ``Timedelta`` to conform the ``.seconds`` attribute with ``datetime.timedelta``, see :ref:`here <whatsnew_0160.api_breaking.timedelta>`
+- Changes to the ``.loc`` slicing API to conform with the behavior of ``.ix`` see :ref:`here <whatsnew_0160.api_breaking.indexing>`
+- Changes to the default for ordering in the ``Categorical`` constructor, see :ref:`here <whatsnew_0160.api_breaking.categorical>`
+- The ``pandas.tools.rplot``, ``pandas.sandbox.qtpandas`` and ``pandas.rpy``
+  modules are deprecated. We refer users to external packages like
+  `seaborn <http://stanford.edu/~mwaskom/software/seaborn/>`_,
+  `pandas-qt <https://github.com/datalyze-solutions/pandas-qt>`_ and
+  `rpy2 <http://rpy.sourceforge.net/>`_ for similar or equivalent
+  functionality, see :ref:`here <whatsnew_0160.deprecations>`
+
 See the :ref:`v0.16.0 Whatsnew <whatsnew_0160>` overview or the issue tracker on GitHub for an extensive list
 of all API changes, enhancements and bugs that have been fixed in 0.16.0.
 
 Thanks
 ~~~~~~
+
+- Aaron Toth
+- Alan Du
+- Alessandro Amici
+- Artemy Kolchinsky
+- Ashwini Chaudhary
+- Ben Schiller
+- Bill Letson
+- Brandon Bradley
+- Chau Hoang
+- Chris Reynolds
+- Chris Whelan
+- Christer van der Meeren
+- David Cottrell
+- David Stephens
+- Ehsan Azarnasab
+- Garrett-R
+- Guillaume Gay
+- Jake Torcasso
+- Jason Sexauer
+- Jeff Reback
+- John McNamara
+- Joris Van den Bossche
+- Joschka zur Jacobsmühlen
+- Juarez Bochi
+- Junya Hayashi
+- K.-Michael Aye
+- Kerby Shedden
+- Kevin Sheppard
+- Kieran O'Mahony
+- Kodi Arfer
+- Matti Airas
+- Min RK
+- Mortada Mehyar
+- Robert
+- Scott E Lasley
+- Scott Lasley
+- Sergio Pascual
+- Skipper Seabold
+- Stephan Hoyer
+- Thomas Grainger
+- Tom Augspurger
+- TomAugspurger
+- Vladimir Filimonov
+- Vyomkesh Tripathi
+- Will Holmgren
+- Yulong Yang
+- behzad nouri
+- bertrandhaut
+- bjonen
+- cel4
+- clham
+- hsperr
+- ischwabacher
+- jnmclarty
+- josham
+- jreback
+- omtinez
+- roch
+- sinhrks
+- unutbu
 
 pandas 0.15.2
 -------------
@@ -950,7 +1521,7 @@ API Changes
   of the future import. You can use ``//`` and ``floordiv`` to do integer
   division.
 
-.. code-block:: python
+.. code-block:: ipython
 
    In [3]: arr = np.array([1, 2, 3, 4])
 
@@ -1770,9 +2341,9 @@ Improvements to existing features
 
   .. ipython:: python
 
-     p = Panel(randn(3,4,4),items=['ItemA','ItemB','ItemC'],
-                        major_axis=date_range('20010102',periods=4),
-                        minor_axis=['A','B','C','D'])
+     p = pd.Panel(np.random.randn(3,4,4),items=['ItemA','ItemB','ItemC'],
+                  major_axis=pd.date_range('20010102',periods=4),
+                  minor_axis=['A','B','C','D'])
      p
      p.reindex(items=['ItemA']).squeeze()
      p.reindex(items=['ItemA'],minor=['B']).squeeze()
@@ -1788,11 +2359,11 @@ Improvements to existing features
 
   .. ipython:: python
 
-      idx = date_range("2001-10-1", periods=5, freq='M')
-      ts = Series(np.random.rand(len(idx)),index=idx)
+      idx = pd.date_range("2001-10-1", periods=5, freq='M')
+      ts = pd.Series(np.random.rand(len(idx)),index=idx)
       ts['2001']
 
-      df = DataFrame(dict(A = ts))
+      df = pd.DataFrame(dict(A = ts))
       df['2001']
 
 - added option `display.mpl_style` providing a sleeker visual style for plots. Based on https://gist.github.com/huyng/816622 (:issue:`3075`).

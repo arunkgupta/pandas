@@ -27,6 +27,10 @@ libraries, we care about the following things:
 This page is also here to offer a bit of a translation guide for users of these
 R packages.
 
+For transfer of ``DataFrame`` objects from ``pandas`` to R, one option is to
+use HDF5 files, see :ref:`io.external_compatibility` for an
+example.
+
 Base R
 ------
 
@@ -232,12 +236,6 @@ In certain cases :meth:`~pandas.DataFrame.eval` will be much faster than
 evaluation in pure Python. For more details and examples see :ref:`the eval
 documentation <enhancingperf.eval>`.
 
-zoo
----
-
-xts
----
-
 plyr
 ----
 
@@ -291,7 +289,7 @@ In ``pandas`` the equivalent expression, using the
    })
 
    grouped = df.groupby(['month','week'])
-   print grouped['x'].agg([np.mean, np.std])
+   grouped['x'].agg([np.mean, np.std])
 
 
 For more details and examples see :ref:`the groupby documentation
